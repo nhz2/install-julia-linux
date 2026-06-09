@@ -113,6 +113,15 @@ an older one leaves it alone) and **dropped when its target is removed** — it 
 `julia-1.12` disappear until you next install something in that line; the older
 `julia-1.12.5` and its direct link are untouched.
 
+### Reinstalling
+
+Installing a version that already exists re-downloads and replaces the build, after
+asking for confirmation. The new build is unpacked fully off to the side and only
+then moved into place, so the symlinks never point at a partial install. On modern
+systems (coreutils ≥ 9.5) the swap is a single atomic `mv --exchange`; on older ones
+it falls back to a park-and-rename with a brief window where the directory is absent,
+during which a concurrent `julia` can momentarily fail to launch.
+
 ### Concurrency
 
 Each install/remove takes a **per-version lock** (`flock` on a hidden

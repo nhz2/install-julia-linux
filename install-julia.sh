@@ -467,16 +467,40 @@ install_resolved() {
 	fi
 	[ -n "$_realver" ] || _realver=$R_LABEL
 
-	# Swap: rename(2) can't overwrite a non-empty dir, so on a refresh park the old
-	# version at .old.* first, then rename the new one in. Both are same-fs renames,
-	# so the only window where DEST_DIR is absent is a single syscall. If the second
-	# rename fails the version is left missing (the parked .old is reaped at the next
-	# install) - re-running heals it; we never reconstruct state from .old.
-	if [ -d "$DEST_DIR" ]; then
+	# Swap the unpacked tree into place. Three cases:
+	#
+	#   * First install (no DEST yet): a single rename(2). No window.
+	#
+	#   * Refresh via `mv --exchange` (coreutils >=9.5, same-fs supporting atomic
+	#     exchange - ext4/xfs/btrfs/tmpfs): one renameat2(RENAME_EXCHANGE) atomically
+	#     swaps new<->old under DEST, so a concurrent `julia` never sees DEST missing.
+	#     -T (--no-target-directory) is REQUIRED: DEST is an existing directory, so
+	#     without it mv moves INCOMING *inside* DEST instead of swapping the two.
+	#     INCOMING then holds the old build; park it in .old.* for the next reap.
+	#
+	#   * Refresh fallback (older mv, or a fs/situation without atomic exchange):
+	#     rename(2) can't overwrite a non-empty dir, so park the old version at .old.*
+	#     first, then rename the new one in. DEST is absent for the single syscall
+	#     between the two renames - a concurrent `julia` can momentarily get ENOENT,
+	#     fine for the rolling builds this affects. If the second rename fails the
+	#     version is left missing (parked .old reaped next install) - re-running heals.
+	#
+	# Probing by attempt (vs caching a feature flag) is safe and costs nothing on a
+	# rare refresh: an old mv rejects --exchange as an unknown option and an
+	# unsupported situation errors out, both before touching anything (a failed
+	# renameat2 changes nothing), and INCOMING/DEST are same-fs by construction so
+	# there is no copy-emulation path - the fallback always picks up a clean slate.
+	if [ ! -d "$DEST_DIR" ]; then
+		mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
+	else
 		info "$_destname already installed; refreshing"
-		mv "$DEST_DIR" "$OLD_DIR" || die "could not move aside existing $_destname"
+		if mv --exchange -T "$INCOMING_DIR" "$DEST_DIR" 2>/dev/null; then
+			mv "$INCOMING_DIR" "$OLD_DIR" 2>/dev/null || :
+		else
+			mv "$DEST_DIR" "$OLD_DIR" || die "could not move aside existing $_destname"
+			mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
+		fi
 	fi
-	mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
 	info "Installed $_realver -> $DEST_DIR"
 }
 
@@ -490,9 +514,10 @@ link() {
 	# create a temp link and rename() it over NAME instead, so a concurrent reader
 	# (or `julia` invocation) never sees the link missing. This is what keeps a
 	# normal install gapless: a new stable version only flips the julia / julia-1 /
-	# julia-X.Y links, and each flip is atomic. (A same-name *refresh* - i.e. a
-	# nightly/pr update - still has a tiny gap while its directory is swapped, which
-	# is fine: those are testing builds, not production.)
+	# julia-X.Y links, and each flip is atomic. (A same-name *refresh* - a nightly/pr
+	# update - swaps its directory in place: atomic via `mv --exchange` on coreutils
+	# >=9.5, else a tiny gap, which is fine for those testing builds. See the swap in
+	# install_resolved.)
 	mkdir -p "$SYMLINK_DIR"
 	_tmp="$SYMLINK_DIR/.$1.tmp.$$"
 	# -f so a stale temp left by a crashed run (or a reused PID) is overwritten
@@ -596,7 +621,20 @@ cmd_install() {
 	_destname="julia-$R_LABEL"
 	lock_version "$_destname"
 
-	if ! confirm "Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"; then
+	# Spell out the reinstall case in the prompt. A stable release is immutable, so if
+	# its dir already exists the resolved label is the latest matching patch already on
+	# disk and reinstalling just re-downloads the identical build (useful to repair a
+	# corrupt tree, wasteful otherwise). A rolling build (nightly/pr) instead refreshes
+	# to the newest build behind that label, which is the whole point of re-running it.
+	_prompt="Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"
+	if [ -d "$INSTALL_DIR/$_destname" ]; then
+		if [ "$R_KIND" = release ]; then
+			_prompt="$R_LABEL is already installed (the latest matching stable version); re-download and reinstall it?"
+		else
+			_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
+		fi
+	fi
+	if ! confirm "$_prompt"; then
 		info "Aborted."; exit 0
 	fi
 
