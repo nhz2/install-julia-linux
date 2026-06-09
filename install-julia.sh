@@ -88,6 +88,7 @@ NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.juliala
 STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
 
 NO_CONFIRM=0
+REINSTALL=0
 
 # Resolver output (populated by resolve_spec):
 R_KIND=""      # release | nightly | pr
@@ -467,39 +468,25 @@ install_resolved() {
 	fi
 	[ -n "$_realver" ] || _realver=$R_LABEL
 
-	# Swap the unpacked tree into place. Three cases:
+	# Swap the unpacked tree into place. Two cases:
 	#
 	#   * First install (no DEST yet): a single rename(2). No window.
 	#
-	#   * Refresh via `mv --exchange` (coreutils >=9.5, same-fs supporting atomic
-	#     exchange - ext4/xfs/btrfs/tmpfs): one renameat2(RENAME_EXCHANGE) atomically
-	#     swaps new<->old under DEST, so a concurrent `julia` never sees DEST missing.
-	#     -T (--no-target-directory) is REQUIRED: DEST is an existing directory, so
-	#     without it mv moves INCOMING *inside* DEST instead of swapping the two.
-	#     INCOMING then holds the old build; park it in .old.* for the next reap.
-	#
-	#   * Refresh fallback (older mv, or a fs/situation without atomic exchange):
-	#     rename(2) can't overwrite a non-empty dir, so park the old version at .old.*
-	#     first, then rename the new one in. DEST is absent for the single syscall
-	#     between the two renames - a concurrent `julia` can momentarily get ENOENT,
-	#     fine for the rolling builds this affects. If the second rename fails the
-	#     version is left missing (parked .old reaped next install) - re-running heals.
-	#
-	# Probing by attempt (vs caching a feature flag) is safe and costs nothing on a
-	# rare refresh: an old mv rejects --exchange as an unknown option and an
-	# unsupported situation errors out, both before touching anything (a failed
-	# renameat2 changes nothing), and INCOMING/DEST are same-fs by construction so
-	# there is no copy-emulation path - the fallback always picks up a clean slate.
+	#   * Refresh (DEST exists): rename(2) can't overwrite a non-empty dir, so park the
+	#     old version at .old.* first, then rename the new one in. DEST is absent for
+	#     the single syscall between the two renames, so a concurrent `julia` can
+	#     momentarily get ENOENT. We don't bother closing that window with an atomic
+	#     `mv --exchange`: a refresh only happens on --reinstall or a rolling nightly/pr
+	#     update (an already-present stable version skips the download entirely), so
+	#     casual users never reach this path and anyone who does can just re-run. If
+	#     power is lost between the two renames the version is left missing, and the
+	#     parked .old is reaped on the next install.
 	if [ ! -d "$DEST_DIR" ]; then
 		mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
 	else
 		info "$_destname already installed; refreshing"
-		if mv --exchange -T "$INCOMING_DIR" "$DEST_DIR" 2>/dev/null; then
-			mv "$INCOMING_DIR" "$OLD_DIR" 2>/dev/null || :
-		else
-			mv "$DEST_DIR" "$OLD_DIR" || die "could not move aside existing $_destname"
-			mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
-		fi
+		mv "$DEST_DIR" "$OLD_DIR" || die "could not move aside existing $_destname"
+		mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
 	fi
 	info "Installed $_realver -> $DEST_DIR"
 }
@@ -515,9 +502,8 @@ link() {
 	# (or `julia` invocation) never sees the link missing. This is what keeps a
 	# normal install gapless: a new stable version only flips the julia / julia-1 /
 	# julia-X.Y links, and each flip is atomic. (A same-name *refresh* - a nightly/pr
-	# update - swaps its directory in place: atomic via `mv --exchange` on coreutils
-	# >=9.5, else a tiny gap, which is fine for those testing builds. See the swap in
-	# install_resolved.)
+	# update or --reinstall - swaps its directory in place with a brief gap where it's
+	# absent, fine for those non-casual paths. See the swap in install_resolved.)
 	mkdir -p "$SYMLINK_DIR"
 	_tmp="$SYMLINK_DIR/.$1.tmp.$$"
 	# -f so a stale temp left by a crashed run (or a reused PID) is overwritten
@@ -621,32 +607,46 @@ cmd_install() {
 	_destname="julia-$R_LABEL"
 	lock_version "$_destname"
 
-	# Spell out the reinstall case in the prompt. A stable release is immutable, so if
-	# its dir already exists the resolved label is the latest matching patch already on
-	# disk and reinstalling just re-downloads the identical build (useful to repair a
-	# corrupt tree, wasteful otherwise). A rolling build (nightly/pr) instead refreshes
-	# to the newest build behind that label, which is the whole point of re-running it.
-	_prompt="Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"
-	if [ -d "$INSTALL_DIR/$_destname" ]; then
-		if [ "$R_KIND" = release ]; then
-			_prompt="$R_LABEL is already installed (the latest matching stable version); re-download and reinstall it?"
+	# A stable release is immutable, so once its dir exists the resolved label is that
+	# same build and there is nothing to download. Default to skipping the reinstall:
+	# no pointless re-download, and no non-atomic refresh of a live version on systems
+	# without an atomic directory swap. We still re-link it (and switch the default),
+	# so the prompt spells that out and points at --reinstall to force a fresh build.
+	# --reinstall, and rolling nightly/pr builds (which refresh to the newest build
+	# behind their label - the whole point of re-running them), take the full
+	# download-verify-swap path below.
+	if [ -d "$INSTALL_DIR/$_destname" ] && [ "$R_KIND" = release ] && [ "$REINSTALL" != 1 ]; then
+		if [ "$_setdefault" = 1 ]; then
+			_prompt="$R_LABEL is already installed; make it the default and refresh its symlinks in $SYMLINK_DIR? (pass --reinstall to re-download and replace the build)"
 		else
-			_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
+			_prompt="$R_LABEL is already installed; refresh its symlinks in $SYMLINK_DIR? (pass --reinstall to re-download and replace the build)"
 		fi
-	fi
-	if ! confirm "$_prompt"; then
-		info "Aborted."; exit 0
-	fi
+		if ! confirm "$_prompt"; then
+			info "Aborted."; exit 0
+		fi
+	else
+		_prompt="Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"
+		if [ -d "$INSTALL_DIR/$_destname" ]; then
+			if [ "$R_KIND" = release ]; then
+				_prompt="$R_LABEL is already installed; re-download and replace it?"
+			else
+				_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
+			fi
+		fi
+		if ! confirm "$_prompt"; then
+			info "Aborted."; exit 0
+		fi
 
-	# The .incoming.* / .old.* names are hidden and not julia-* prefixed, so the
-	# list/remove/rollup scans ignore them. Set here in the parent shell (not a
-	# subshell) so the EXIT trap can see and clean them.
-	DEST_DIR="$INSTALL_DIR/$_destname"
-	INCOMING_DIR="$INSTALL_DIR/.incoming.$_destname"
-	OLD_DIR="$INSTALL_DIR/.old.$_destname"
-	STAGE_TAR="$INCOMING_DIR.tar.gz"
+		# The .incoming.* / .old.* names are hidden and not julia-* prefixed, so the
+		# list/remove/rollup scans ignore them. Set here in the parent shell (not a
+		# subshell) so the EXIT trap can see and clean them.
+		DEST_DIR="$INSTALL_DIR/$_destname"
+		INCOMING_DIR="$INSTALL_DIR/.incoming.$_destname"
+		OLD_DIR="$INSTALL_DIR/.old.$_destname"
+		STAGE_TAR="$INCOMING_DIR.tar.gz"
 
-	install_resolved
+		install_resolved
+	fi
 	make_symlinks "$_destname" "$R_LABEL"
 	if [ "$_setdefault" = 1 ]; then
 		set_default "$INSTALL_DIR/$_destname/bin/julia"
@@ -775,6 +775,7 @@ Options:
   -h, --help     show this help and exit
   -v, --version  show version and exit
   -y, --yes      do not prompt for confirmation
+  --reinstall    if a stable version is already installed, re-download and replace it
 
 Versions:
   1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<num>
@@ -792,6 +793,7 @@ main() {
 			-h | --help) usage; exit 0 ;;
 			-v | --version) printf 'install-julia.sh %s\n' "$SELF_VERSION"; exit 0 ;;
 			-y | --yes) NO_CONFIRM=1 ;;
+			--reinstall) REINSTALL=1 ;;
 			--) shift; while [ $# -gt 0 ]; do _positional="$_positional $1"; shift; done; break ;;
 			-*) die "unknown option: $1 (try --help)" ;;
 			*) _positional="$_positional $1" ;;

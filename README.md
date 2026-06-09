@@ -50,6 +50,7 @@ install-julia.sh [options] [command] [version]
 | `-h`, `--help`                  | Show help.                               |
 | `-v`, `--version`               | Show the script's own version.           |
 | `-y`, `--yes`                   | Don't prompt for confirmation.           |
+| `--reinstall`                   | If a stable version is already installed, re-download and replace it. |
 
 ## Version specifiers
 
@@ -115,12 +116,12 @@ an older one leaves it alone) and **dropped when its target is removed** — it 
 
 ### Reinstalling
 
-Installing a version that already exists re-downloads and replaces the build, after
-asking for confirmation. The new build is unpacked fully off to the side and only
-then moved into place, so the symlinks never point at a partial install. On modern
-systems (coreutils ≥ 9.5) the swap is a single atomic `mv --exchange`; on older ones
-it falls back to a park-and-rename with a brief window where the directory is absent,
-during which a concurrent `julia` can momentarily fail to launch.
+A stable release is immutable, so installing one that's already present does **not**
+re-download it — it just refreshes the symlinks (and, for the default-setting form,
+switches the default), after a confirmation prompt that says so. Pass `--reinstall`
+to force a fresh download and replace the build (e.g. to repair a corrupt tree).
+Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
+label.
 
 ### Concurrency
 
