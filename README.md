@@ -1,4 +1,4 @@
-# install-julia.sh
+# install-julia-linux
 
 A POSIX shell script that installs and manages
 [Julia](https://julialang.org) on Linux. It is an alternative to [`jill.py`](https://github.com/johnnychen94/jill.py)
