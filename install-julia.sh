@@ -21,9 +21,16 @@ SELF_VERSION="0.1.0"
 
 INSTALL_DIR=${INSTALL_JULIA_INSTALL_DIR:-"$HOME/packages/julias"}
 SYMLINK_DIR=${INSTALL_JULIA_SYMLINK_DIR:-"$HOME/.local/bin"}
+NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
+
+# Service endpoints. All overridable via the environment so the script can be
+# pointed at a mirror or a private cache. Trailing slashes are stripped.
+STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"https://julialang-s3.julialang.org"}
+NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.julialang.org"}
+STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
+
 # Pinned for display only; the trusted key itself is embedded (see julia_keyring).
 GPG_FPR="3673DF529D9049477F76B37566E3C7DC03D6E495"
-NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
 
 # The official Julia binary signing key, dearmored to a binary keyring for gpgv.
 # Source : https://julialang.org/assets/juliareleases.asc
@@ -80,12 +87,6 @@ J7mIedeA2ND/KrLlllE7NImLdlrciShctFP1ciqqHtTebQ+5MH17ObOhSptUDEt5LjZt3YXZtQ+C
 cgYU
 EOF
 }
-
-# Service endpoints. All overridable via the environment so the script can be
-# pointed at a mirror or a private cache. Trailing slashes are stripped.
-STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"https://julialang-s3.julialang.org"}
-NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.julialang.org"}
-STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
 
 NO_CONFIRM=0
 REINSTALL=0
@@ -786,26 +787,27 @@ EOF
 }
 
 main() {
-	# Pull out global flags anywhere on the line; keep positionals in order.
-	_positional=""
+	# Walk every argument once: flags set their globals wherever they appear, and
+	# the first two non-flags land in _cmd and _arg. Keeping positionals in named
+	# variables (rather than rebuilding $@ from a collected string) preserves each
+	# argument's boundaries, so a path like "switch /my dir/julia" survives intact.
+	_cmd=""
+	_arg=""
 	while [ $# -gt 0 ]; do
 		case "$1" in
-			-h | --help) usage; exit 0 ;;
+			-h | --help)    usage; exit 0 ;;
 			-v | --version) printf 'install-julia.sh %s\n' "$SELF_VERSION"; exit 0 ;;
-			-y | --yes) NO_CONFIRM=1 ;;
-			--reinstall) REINSTALL=1 ;;
-			--) shift; while [ $# -gt 0 ]; do _positional="$_positional $1"; shift; done; break ;;
-			-*) die "unknown option: $1 (try --help)" ;;
-			*) _positional="$_positional $1" ;;
+			-y | --yes)     NO_CONFIRM=1 ;;
+			--reinstall)    REINSTALL=1 ;;
+			-*)             die "unknown option: $1 (try --help)" ;;
+			*)
+				if   [ -z "$_cmd" ]; then _cmd=$1
+				elif [ -z "$_arg" ]; then _arg=$1
+				else die "unexpected extra argument: $1"
+				fi ;;
 		esac
 		shift
 	done
-	# Disable globbing for the re-split so a spec containing a glob metacharacter
-	# isn't expanded against the cwd; restore it afterwards (cmd_remove globs).
-	set -f
-	# shellcheck disable=SC2086
-	set -- $_positional
-	set +f
 
 	# Check every hard dependency up front, before any command runs, so a missing
 	# tool surfaces immediately instead of partway through an operation. gpgv/base64
@@ -815,22 +817,22 @@ main() {
 	need flock
 	[ "$NO_VERIFY" = 1 ] || { need gpgv; need base64; }
 
-	case "${1:-}" in
+	case "$_cmd" in
 		add)
-			[ $# -ge 2 ] || die "usage: install-julia.sh add <version>"
-			cmd_install "$2" 0 ;;
+			[ -n "$_arg" ] || die "usage: install-julia.sh add <version>"
+			cmd_install "$_arg" 0 ;;
 		switch)
-			[ $# -ge 2 ] || die "usage: install-julia.sh switch <version|path>"
-			cmd_switch "$2" ;;
+			[ -n "$_arg" ] || die "usage: install-julia.sh switch <version|path>"
+			cmd_switch "$_arg" ;;
 		remove | rm | uninstall)
-			[ $# -ge 2 ] || die "usage: install-julia.sh remove <version>"
-			cmd_remove "$2" ;;
+			[ -n "$_arg" ] || die "usage: install-julia.sh remove <version>"
+			cmd_remove "$_arg" ;;
 		list | ls)
 			cmd_list ;;
 		"")
 			cmd_install "" 1 ;;             # default: latest stable, set default
 		*)
-			cmd_install "$1" 1 ;;           # install-julia.sh <version>
+			cmd_install "$_cmd" 1 ;;        # install-julia.sh <version>
 	esac
 }
 
