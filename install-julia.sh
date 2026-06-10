@@ -119,7 +119,7 @@ STAGE_TAR=""     # downloaded tarball; .asc and .keyring sit beside it
 info() { printf '==> %s\n' "$*" >&2; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 err()  { printf 'error: %s\n' "$*" >&2; }
-die()  { err "$@"; exit 1; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # EXIT/INT/TERM trap; returns 0 so it never overrides the script's exit status.
 # Runs on Ctrl-C, so it must be fast: rename the (possibly huge) incoming tree into
