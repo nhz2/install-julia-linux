@@ -103,54 +103,30 @@ ARCH_STABLE=""   # stable bucket dir: x64 | x86 | aarch64 (raw token if unrecogn
 ARCH_FILE=""     # filename arch:     x86_64 | i686 | aarch64 (raw token if unrecognized)
 ARCH_SUFFIX=""   # "~<arch>" tag appended to the label when ~arch was given ("" if autodetected)
 
-# Install staging paths (set by cmd_install; all live inside INSTALL_DIR so every
-# move is a same-filesystem rename). The download, signature and unpacked tree go
-# under .incoming.*; the version being replaced is parked at .old.* during the swap.
-# cleanup() and the next install's reap tear these down.
-DEST_DIR=""      # final version dir, e.g. .../julia-1.12.6
-INCOMING_DIR=""  # unpacked new build, e.g. .../.incoming.julia-1.12.6
-OLD_DIR=""       # previous version parked here during the swap
-STAGE_TAR=""     # downloaded tarball; .asc and .keyring sit beside it
-
 # --------------------------------------------------------------------------- #
 # Output helpers                                                              #
 # --------------------------------------------------------------------------- #
 
 info() { printf '==> %s\n' "$*" >&2; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
-err()  { printf 'error: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
-
-# EXIT/INT/TERM trap; returns 0 so it never overrides the script's exit status.
-# Runs on Ctrl-C, so it must be fast: rename the (possibly huge) incoming tree into
-# the inert .old.* namespace - an instant rename() vs a slow rm -rf - and let the
-# next install's reap (install_resolved) delete it. Only the single staged tarball
-# is unlinked here; the lockfile is left for the kernel to release on exit.
-cleanup() {
-	[ -n "$INCOMING_DIR" ] && [ -e "$INCOMING_DIR" ] &&
-		mv "$INCOMING_DIR" "$INSTALL_DIR/.old.incoming.$$" 2>/dev/null
-	[ -n "$STAGE_TAR" ] && rm -f "$STAGE_TAR" "$STAGE_TAR.asc" "$STAGE_TAR.keyring" 2>/dev/null
-	return 0
-}
-trap cleanup EXIT INT TERM
 
 confirm() {
 	# confirm "question" -> 0 if yes. Read the answer strictly from the controlling
 	# terminal (/dev/tty), never from stdin: under `curl ... | sh` stdin is the script
 	# source, and a stdin fallback would consume the next script line as the answer.
-	# No tty means we can't ask, so decline (the prompt default is N anyway) and point
-	# at -y for non-interactive use.
+	# No tty means we can't ask, so exit 1 and point at -y for non-interactive use.
 	[ "$NO_CONFIRM" -eq 1 ] && return 0
+	if ! true </dev/tty; then
+		warn "no terminal available to confirm; exiting (pass -y to proceed non-interactively)"
+		exit 1
+	fi
 	printf '%s [y/N] ' "$1" >&2
-	# 2>/dev/null is placed before </dev/tty on purpose: redirections apply left to
-	# right, so the stderr redirect must be in effect before the (possibly failing)
-	# /dev/tty open, or the shell's "cannot open /dev/tty" leaks to the terminal.
-	if ! read -r _ans 2>/dev/null </dev/tty; then
+	if ! read -r _confirm_ans </dev/tty; then
 		printf '\n' >&2
-		warn "no terminal available to confirm; assuming No (pass -y to proceed non-interactively)"
 		return 1
 	fi
-	case "$_ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+	case "$_confirm_ans" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
 # --------------------------------------------------------------------------- #
@@ -161,39 +137,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 need() { have "$1" || die "required command not found: $1"; }
 
-# Take a non-blocking, per-version lock so two operations on the SAME version can't
-# race (install vs install, or install vs remove). Different versions use different
-# lock files and proceed concurrently. flock holds the lock on FD 9 for the life of
-# the process; the kernel releases it automatically on exit - even on SIGKILL - so a
-# crash never leaves a stale lock, and we never delete the lockfile (deleting it
-# would break mutual exclusion for a process that already opened it). First starter
-# wins; a second caller fails fast rather than waiting.
-lock_version() {        # lock_version DESTNAME   e.g. julia-1.12.6
-	_lock="$INSTALL_DIR/.lock.$1"
-	exec 9>"$_lock"
-	flock -n 9 || die "another install or remove of ${1#julia-} is already in progress"
-	# Revalidate that the file we locked is still the one at this path. `remove`
-	# deletes the lockfile as its last act; if it unlinked ours between our open and
-	# our flock, our FD now holds a nameless inode while a fresh opener would create
-	# a new one - two "holders" on two inodes. Compare our FD's inode (via /proc) to
-	# the path's: a mismatch means we raced that remove, so fail fast (re-run). Once
-	# they match we're canonical - nobody can delete it without first taking our lock.
-	# Best-effort: if the FD inode can't be read (no /proc), skip rather than break.
-	_fdino=$(stat -L -c %i /proc/self/fd/9 2>/dev/null)
-	[ -z "$_fdino" ] || [ "$_fdino" = "$(stat -c %i "$_lock" 2>/dev/null)" ] ||
-		die "lock for ${1#julia-} was removed concurrently; please retry"
-}
-
 # http_get URL -> body on stdout; nonzero on HTTP/transport error.
-# Capture this into a variable on its own line - _x=$(http_get ...) || die ... --
-# never straight into a pipeline: a failing command substitution in a plain
-# assignment trips `set -e`, but inside a pipeline it's swallowed, so piping would
-# let a network error masquerade as an empty ("not found") result.
-# --max-filesize caps a hostile endless response; 100M dwarfs the versions.json
-# manifest (~2M) and any real bucket listing.
+# --max-filesize caps a hostile endless response; 100M >> the versions.json
 http_get() { curl -fsSL --retry 3 --max-filesize 100M "$1"; }
 
-# http_download URL DEST. --max-filesize caps it (declared-size refusal + mid-stream abort on curl 8.20.0+); 3G >> any build.
+# http_download URL DEST. --max-filesize caps it; 3G >> any build.
 http_download() { curl -fL --retry 3 --progress-bar --max-filesize 3G -o "$2" "$1"; }
 
 # http_ok URL -> 0 if a HEAD request returns success
@@ -305,16 +253,14 @@ resolve_nightly() {
 }
 
 resolve_pr() {
-	# Julia's CI uploads each open PR's latest build to a fixed, PR-numbered key
-	# in the nightlies bucket (same scheme juliaup uses). No GitHub/Buildkite API
-	# and no token required; the file is replaced in place as the PR gets commits,
-	# so there is no published sha256 and no GPG signature for it.
+	# Julia's CI uploads some PR's latest build to a fixed, PR-numbered key
+	# in the nightlies bucket.
 	_num=$1
 	R_KIND='pr'
 	R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-pr$_num-linux-$ARCH_FILE.tar.gz"
 	http_ok "$R_URL" || die \
 		"no build published for PR #$_num on $ARCH_FILE (the PR may be closed, or CI hasn't uploaded a build yet)"
-	R_ASC_URL="$R_URL.asc"   # checked with http_ok before use; absent for PR builds
+	R_ASC_URL="$R_URL.asc"
 	R_ROLLUP=0
 	R_LABEL="pr$_num"
 }
@@ -323,6 +269,11 @@ resolve_pr() {
 resolve_spec() {
 	_spec=$1
 	R_KIND=""; R_LABEL=""; R_URL=""; R_ASC_URL=""; R_ROLLUP=0
+
+	# Reject any path-shaped spec outright: case globs match '/', so a spec like
+	# "1.2.3/../evil" would otherwise fall into the version patterns below and
+	# end up in install-dir names, where the slash escapes INSTALL_DIR.
+	case "$_spec" in */*) die "bad version specifier: $_spec" ;; esac
 
 	# Split off an architecture override: "1.10~aarch64". An explicit ~arch tags the
 	# label with what the user typed (~x86, not the canonical ~i686) and opts the
@@ -426,35 +377,59 @@ verify_sig() {
 	fi
 }
 
-# install_resolved: download R_URL, verify, and unpack into DEST_DIR. Uses the
-# .incoming.* / .old.* staging paths set by cmd_install (all inside INSTALL_DIR,
-# so every move is a same-filesystem rename).
+# install_resolved DESTNAME: download R_URL, verify it, and claim
+# INSTALL_DIR/DESTNAME. All scratch lives inside INSTALL_DIR (so every move is a
+# same-filesystem rename), under hidden, non-julia-* names that the
+# list/remove/rollup scans ignore. Staging is two-level: .incoming.<destname>/
+# is the version's staging namespace - an exact, unambiguous name, so no
+# pattern matching is ever needed to find a version's staging - and each
+# attempt gets its own mktemp-unique subdir inside it holding the tarball,
+# signature, keyring and unpacked tree, so no two processes ever share staging
+# paths. The unpacked tree itself is named <destname>, and the final `mv` into
+# INSTALL_DIR either lands it at its final path or fails if the version
+# appeared concurrently - rename(2) never nests or merges. A successful install
+# deletes its own scratch; anything left behind (crash, Ctrl-C) is reaped by
+# the next install or remove of the same version. No locks: same-version
+# operations race by clobber and the loser dies, while different versions never
+# share paths and proceed in parallel.
 install_resolved() {
-	_destname=$(basename "$DEST_DIR")
+	_destname=$1
+	_dest="$INSTALL_DIR/$_destname"
+	_ns="$INSTALL_DIR/.incoming.$_destname"
 
-	# Reap leftover scratch before reusing these paths. This is where the slow
-	# rm -rf lives - at the start of an install you're already committed to, not on
-	# the Ctrl-C path. We reap: this version's .incoming from a hard kill that
-	# skipped cleanup (the lock makes it exclusively ours), plus all .old.* garbage
-	# (parked old versions and trees that cleanup renamed aside, from any version --
-	# always inert, so reaping them all is safe). Also frees disk before download.
-	rm -rf "$INCOMING_DIR" "$INSTALL_DIR"/.old.* 2>/dev/null || :
+	# Reap leftovers before staging. First sweep the inert .old.* garbage (any
+	# version - always safe) to free disk, then yank this version's whole staging
+	# namespace aside with a single rename - so a leftover tree is either whole at
+	# an installable path or whole in the inert .old.* namespace, never
+	# half-deleted somewhere a concurrent claim could pick it up - and a second
+	# sweep deletes what was just yanked. Yanking a live same-version peer's
+	# staging is deliberate: same-version operations race by clobber, and the
+	# loser dies at its next step instead of corrupting anything.
+	rm -rf "$INSTALL_DIR"/.old.* 2>/dev/null || :
+	_scratch=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
+		die "could not create scratch dir in $INSTALL_DIR"
+	mv "$_ns" "$_scratch/" 2>/dev/null || :
+	rm -rf "$INSTALL_DIR"/.old.* 2>/dev/null || :
 
+	mkdir -p "$_ns" || die "could not create staging namespace $_ns"
+	_parent=$(mktemp -d "$_ns/XXXXXXXXXX") || die "could not create staging dir in $_ns"
+	_tree="$_parent/$_destname"
+	_tar="$_parent/stage.tar.gz"
+	mkdir "$_tree" || die "could not create staging directory $_tree"
 	info "Downloading $R_URL"
-	http_download "$R_URL" "$STAGE_TAR" || die "download failed"
-	verify_sig "$STAGE_TAR"
+	http_download "$R_URL" "$_tar" || die "download failed"
+	verify_sig "$_tar"
 
 	info "Unpacking"
 	# --strip-components=1 drops the tarball's leading julia-X.Y.Z/ dir so the tree
-	# lands directly in .incoming.julia-<label>, which we then rename into place.
-	mkdir -p "$INCOMING_DIR"
-	tar -xzf "$STAGE_TAR" --strip-components=1 -C "$INCOMING_DIR" || die "failed to extract tarball"
-	[ -x "$INCOMING_DIR/bin/julia" ] || die "unexpected tarball layout (no bin/julia)"
+	# lands directly in the staging tree, which is named <destname> for the claim below.
+	tar -xzf "$_tar" --strip-components=1 -C "$_tree" || die "failed to extract tarball"
+	[ -x "$_tree/bin/julia" ] || die "unexpected tarball layout (no bin/julia)"
 
 	# Version read from the tarball's own top-level dir name (Julia names it after the
 	# version) - never by running the binary. Used for display, and below to bind a
 	# release tarball to the version we asked for.
-	_realver=$(tar -tzf "$STAGE_TAR" 2>/dev/null | sed -n '1s#^julia-\([^/]*\)/.*#\1#p')
+	_realver=$(tar -tzf "$_tar" 2>/dev/null | sed -n '1s#^julia-\([^/]*\)/.*#\1#p')
 
 	# Version-binding: GPG proves the tarball is a genuine Julia build but not *which*
 	# one, so a hostile endpoint could serve a different (older, still-signed) release
@@ -469,27 +444,44 @@ install_resolved() {
 	fi
 	[ -n "$_realver" ] || _realver=$R_LABEL
 
-	# Swap the unpacked tree into place. Two cases:
+	# Swap the unpacked tree into place. The tree is named <destname> and moved to
+	# INSTALL_DIR itself, so mv computes the final path as the target and rename(2)
+	# either lands it there atomically or fails outright (ENOTEMPTY) if the version
+	# appeared concurrently - the POSIX-portable equivalent of mv -T, with no way
+	# to nest or merge. Two cases:
 	#
 	#   * First install (no DEST yet): a single rename(2). No window.
 	#
 	#   * Refresh (DEST exists): rename(2) can't overwrite a non-empty dir, so park the
-	#     old version at .old.* first, then rename the new one in. DEST is absent for
-	#     the single syscall between the two renames, so a concurrent `julia` can
-	#     momentarily get ENOENT. We don't bother closing that window with an atomic
-	#     `mv --exchange`: a refresh only happens on --reinstall or a rolling nightly/pr
-	#     update (an already-present stable version skips the download entirely), so
-	#     casual users never reach this path and anyone who does can just re-run. If
-	#     power is lost between the two renames the version is left missing, and the
-	#     parked .old is reaped on the next install.
-	if [ ! -d "$DEST_DIR" ]; then
-		mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
+	#     old version in a fresh .old.* scratch dir first, then rename the new one in.
+	#     DEST is absent for the single syscall between the two renames, so a
+	#     concurrent `julia` can momentarily get ENOENT. We don't bother closing that
+	#     window with an atomic `mv --exchange`: a refresh only happens on --reinstall
+	#     or a rolling nightly/pr update (an already-present stable version skips the
+	#     download entirely), so casual users never reach this path and anyone who
+	#     does can just re-run. If power is lost between the two renames the version
+	#     is left missing, and the parked .old is reaped on the next install.
+	# -f on the claims so a stray unwritable file at the destination fails
+	# outright instead of making mv prompt; collisions still fail (rename(2)
+	# never overwrites a non-empty directory).
+	if [ ! -d "$_dest" ]; then
+		mv -f "$_tree" "$INSTALL_DIR/" || die "could not install into $_dest"
 	else
 		info "$_destname already installed; refreshing"
-		mv "$DEST_DIR" "$OLD_DIR" || die "could not move aside existing $_destname"
-		mv "$INCOMING_DIR" "$DEST_DIR" || die "could not install into $DEST_DIR"
+		_old=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
+			die "could not create scratch dir in $INSTALL_DIR"
+		mv "$_dest" "$_old/" || die "could not move aside existing $_destname"
+		mv -f "$_tree" "$INSTALL_DIR/" || die "could not install into $_dest"
+		rm -rf "$_old" 2>/dev/null || :
 	fi
-	info "Installed $_realver -> $DEST_DIR"
+	# Success: our staging subdir now holds only the tarball, signature and keyring;
+	# delete it so a completed install leaves no litter, and drop the namespace dir
+	# if we were the last one staging in it (rmdir only removes it when empty, so a
+	# live peer's staging is never touched). A crash before this line leaves the
+	# scratch for the next same-version install's or remove's reap.
+	rm -rf "$_parent" 2>/dev/null || :
+	rmdir "$_ns" 2>/dev/null || :
+	info "Installed $_realver -> $_dest"
 }
 
 # --------------------------------------------------------------------------- #
@@ -497,20 +489,10 @@ install_resolved() {
 # --------------------------------------------------------------------------- #
 
 link() {
-	# link NAME TARGET - atomically create/replace SYMLINK_DIR/NAME -> TARGET.
-	# `ln -sfn` is unlink()+symlink(), leaving a brief window with no link at all;
-	# create a temp link and rename() it over NAME instead, so a concurrent reader
-	# (or `julia` invocation) never sees the link missing. This is what keeps a
-	# normal install gapless: a new stable version only flips the julia / julia-1 /
-	# julia-X.Y links, and each flip is atomic. (A same-name *refresh* - a nightly/pr
-	# update or --reinstall - swaps its directory in place with a brief gap where it's
-	# absent, fine for those non-casual paths. See the swap in install_resolved.)
+	# link NAME TARGET - create/replace SYMLINK_DIR/NAME -> TARGET.
+	# -n so an existing link to a directory is replaced, not dereferenced.
 	mkdir -p "$SYMLINK_DIR"
-	_tmp="$SYMLINK_DIR/.$1.tmp.$$"
-	# -f so a stale temp left by a crashed run (or a reused PID) is overwritten
-	# rather than aborting the install.
-	ln -sf "$2" "$_tmp" || die "could not create symlink $1"
-	mv "$_tmp" "$SYMLINK_DIR/$1" || { rm -f "$_tmp"; die "could not place symlink $1"; }
+	ln -sfn "$2" "$SYMLINK_DIR/$1" || die "could not create symlink $1"
 	info "symlink $1 -> $2"
 }
 
@@ -601,13 +583,8 @@ cmd_install() {
 	_spec=$1 _setdefault=$2
 	resolve_spec "$_spec"
 	info "Resolved '$_spec' -> $R_LABEL ($R_KIND)"
-
-	# Take the per-version lock before prompting, so a concurrent op on the same
-	# version fails fast instead of bothering the user with a prompt it can't honor.
 	mkdir -p "$INSTALL_DIR"
 	_destname="julia-$R_LABEL"
-	lock_version "$_destname"
-
 	# A stable release is immutable, so once its dir exists the resolved label is that
 	# same build and there is nothing to download. Default to skipping the reinstall:
 	# no pointless re-download, and no non-atomic refresh of a live version on systems
@@ -638,15 +615,7 @@ cmd_install() {
 			info "Aborted."; exit 0
 		fi
 
-		# The .incoming.* / .old.* names are hidden and not julia-* prefixed, so the
-		# list/remove/rollup scans ignore them. Set here in the parent shell (not a
-		# subshell) so the EXIT trap can see and clean them.
-		DEST_DIR="$INSTALL_DIR/$_destname"
-		INCOMING_DIR="$INSTALL_DIR/.incoming.$_destname"
-		OLD_DIR="$INSTALL_DIR/.old.$_destname"
-		STAGE_TAR="$INCOMING_DIR.tar.gz"
-
-		install_resolved
+		install_resolved "$_destname"
 	fi
 	make_symlinks "$_destname" "$R_LABEL"
 	if [ "$_setdefault" = 1 ]; then
@@ -678,10 +647,6 @@ cmd_switch() {
 # Remove one already-resolved build (dir name like julia-1.12.6 / julia-nightly).
 remove_one() {
 	_destname=$1
-	# Take the same per-version lock install uses, so remove can't race a concurrent
-	# install/remove of this version. (Each version locks independently; in a batch
-	# remove the versions are taken one at a time.)
-	lock_version "$_destname"
 	_dest="$INSTALL_DIR/$_destname"
 
 	# Reverse of install: drop the referring symlinks *before* the directory, so
@@ -696,15 +661,14 @@ remove_one() {
 		done
 	fi
 	rm -rf "$_dest"
-	# Mop up this version's .incoming (ours; we hold its lock) and all inert .old.* (as install does).
-	rm -rf "$INSTALL_DIR/.incoming.$_destname" "$INSTALL_DIR/.incoming.$_destname.tar.gz"* \
-	       "$INSTALL_DIR"/.old.* 2>/dev/null || :
+	# Mop up this version's staging namespace the same way install reaps it: yank
+	# .incoming.<destname> aside with one rename (so nothing is ever half-deleted
+	# at an installable path), then sweep all inert .old.* garbage.
+	_scratch=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
+		die "could not create scratch dir in $INSTALL_DIR"
+	mv "$INSTALL_DIR/.incoming.$_destname" "$_scratch/" 2>/dev/null || :
+	rm -rf "$INSTALL_DIR"/.old.* 2>/dev/null || :
 	info "Removed $_destname"
-	# Delete our own lockfile last. Safe: we still hold the flock (so a concurrent
-	# acquirer fails) and acquirers revalidate the inode (see lock_version), so this
-	# never lets two operations run at once. The rm only drops the name; the lock is
-	# held until FD 9 is reassigned or the process exits.
-	rm -f "$INSTALL_DIR/.lock.$_destname"
 }
 
 cmd_remove() {
@@ -726,7 +690,7 @@ cmd_remove() {
 	fi
 
 	# Version ids carry no spaces or glob metacharacters, so word-splitting the list
-	# is safe; staying out of a subshell keeps `die` (e.g. a lock conflict) fatal to
+	# is safe; staying out of a subshell keeps `die` fatal to
 	# the whole batch rather than just one iteration.
 	for _destname in $_matches; do
 		remove_one "$_destname"
@@ -788,9 +752,7 @@ EOF
 
 main() {
 	# Walk every argument once: flags set their globals wherever they appear, and
-	# the first two non-flags land in _cmd and _arg. Keeping positionals in named
-	# variables (rather than rebuilding $@ from a collected string) preserves each
-	# argument's boundaries, so a path like "switch /my dir/julia" survives intact.
+	# the first two non-flags land in _cmd and _arg.
 	_cmd=""
 	_arg=""
 	while [ $# -gt 0 ]; do
@@ -814,7 +776,7 @@ main() {
 	# are needed only when signature verification is on (the default).
 	need curl
 	need tar
-	need flock
+	need mktemp
 	[ "$NO_VERIFY" = 1 ] || { need gpgv; need base64; }
 
 	case "$_cmd" in

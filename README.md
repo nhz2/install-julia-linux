@@ -9,7 +9,7 @@ symlinks on your `PATH`.
 
 Vibe coded with claude code.
 
-Runtime dependencies: `curl`, `tar`, `flock`, `gpgv`, and `base64`
+Runtime dependencies: `curl`, `tar`, `gpgv`, and `base64`
 
 ## Install
 
@@ -122,16 +122,6 @@ switches the default), after a confirmation prompt that says so. Pass `--reinsta
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
 Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
 label.
-
-### Concurrency
-
-Each install/remove takes a **per-version lock** (`flock` on a hidden
-`.lock.julia-<version>` file in the install dir). So:
-
-- Operations on **different** versions run **concurrently**.
-- Operations on the **same** version are serialized **fail-fast**: the first
-  starter wins, and a second one exits immediately with "already in progress"
-  rather than waiting. (Re-run it once the first finishes.)
 
 ## Verification
 
