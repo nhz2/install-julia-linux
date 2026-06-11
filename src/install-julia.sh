@@ -692,6 +692,11 @@ remove_one() {
 
 cmd_remove() {
 	_target=$1
+	# Reject any path-shaped target outright (as resolve_spec does for installs):
+	# match_installed resolves an exact id with a bare [ -d "$INSTALL_DIR/julia-$_q" ]
+	# test, so a "../.." target would escape INSTALL_DIR and remove_one's rm -rf
+	# would delete a tree outside it.
+	case "$_target" in */*) die "bad version specifier: $_target" ;; esac
 	# A bare numeric prefix expands to every build under it (releases, prereleases,
 	# the branch nightly, all arches); a non-numeric id (master nightly / pr... /
 	# fully-qualified prerelease or ~arch) matches just itself. See match_installed.

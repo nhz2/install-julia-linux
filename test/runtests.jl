@@ -139,6 +139,25 @@ end
     @test r.code == 1
     @test r.err == "error: unrecognized version specifier: foo\n"
     @test !isdir(installdir)   # died before mkdir -p INSTALL_DIR
+
+    # `remove` must reject a path-shaped target too: match_installed resolves an
+    # exact id with [ -d "$INSTALL_DIR/julia-$q" ], so without this guard
+    # "nightly/../../evil" would escape INSTALL_DIR and rm -rf a tree outside
+    # it. The guard fires before match_installed, so remove_one is never reached.
+    for spec in ("nightly/../../evil", "../../evil", "1.0/../evil")
+        r = run_script_y("remove", spec)
+        @test r.code == 1
+        @test r.err == "error: bad version specifier: $spec\n"
+    end
+
+    # a slashless ".." can't traverse: with no '/', "$INSTALL_DIR/julia-.." is a
+    # single component literally named "julia-..", not a parent reference, so
+    # match_installed simply finds nothing rather than escaping the tree
+    for spec in ("..", ".", "...")
+        r = run_script_y("remove", spec)
+        @test r.code == 1
+        @test r.err == "error: no installed version matching '$spec'\n"
+    end
 end
 @testset "usage errors" begin
     # commands that need an argument die with a usage line when it's missing
