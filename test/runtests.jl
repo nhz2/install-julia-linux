@@ -93,6 +93,20 @@ function run_script_y(args::String...; kwargs...)
     run_script("-y", args...; kwargs...)
 end
 
+# Resolve `pre` (latest, prereleases included) against a synthetic versions.json
+# listing exactly `versions`, and return the version it picked - i.e. the
+# maximum under the script's SemVer comparator, via the real resolution path.
+function resolve_max(versions...)
+    cleanup()
+    mr = fake_mirror(versions...)
+    r = run_script_y("add", "pre"; env=("INSTALL_JULIA_STABLE_URL" => "file://$mr",
+                                        "INSTALL_JULIA_NO_VERIFY" => "1"))
+    @test r.code == 0
+    m = match(r"Resolved 'pre' -> (\S+) \(release\)", r.err)
+    m === nothing && error("no Resolved line in:\n$(r.err)")
+    String(m.captures[1])
+end
+
 
 @testset "shellcheck" begin
     @test success(run(`shellcheck $(script) --severity=warning`))
@@ -519,6 +533,17 @@ end
     @test r.code == 1
     @test occursin("no installed version matching '9.9'", r.err)
     @test readlink(joinpath(symlinkdir, "julia")) == binfile   # default untouched
+
+    # list orders by version, not lexically: the POSIX numeric field sort that
+    # replaced sort -V must rank 1.2.0 < 1.9.9 < 1.10.0 (lexically 1.10.0 would
+    # sort before 1.9.9), with the prerelease of 1.10.1 after the 1.10.0 release
+    cleanup()
+    for v in ("1.10.0", "1.9.9", "1.2.0", "1.10.1-rc1")
+        mkpath(joinpath(installdir, "julia-$v/bin"))
+    end
+    r = run_script("list")
+    @test r.code == 0
+    @test r.out == "   1.2.0\n   1.9.9\n   1.10.0\n   1.10.1-rc1\n"
 end
 @testset "switch prefix resolution" begin
     cleanup()
@@ -530,7 +555,7 @@ end
 
     # a prefix resolves to the greatest installed plain stable patch under it:
     # prereleases, ~arch copies, and nightlies never match a prefix, and
-    # sort -V ranks 1.10.0 over 1.9.9 (lexically it wouldn't be)
+    # version_gt ranks 1.10.0 over 1.9.9 (lexically it wouldn't be)
     r = run_script_y("switch", "1")
     @test r.code == 0
     @test occursin("Default 'julia' now points to 1.10.0", r.err)
@@ -604,6 +629,51 @@ end
     @test occursin("3 installed versions match '1'", r.err)
     @test isempty(readdir(installdir))
 end
+@testset "version comparison" begin
+    # The SemVer comparator that replaced sort -V is exercised through real
+    # resolution: `pre` picks the greatest version in a synthetic versions.json,
+    # so resolve_max(set) is the maximum under the script's ordering. Each set
+    # below isolates one precedence rule.
+
+    # core numeric, two-digit boundary (lexically 1.10.0 would sort below 1.9.9)
+    @test resolve_max("1.9.9", "1.10.0") == "1.10.0"
+    @test resolve_max("1.99.99", "2.0.0") == "2.0.0"
+
+    # a final release outranks its prerelease
+    @test resolve_max("1.0.0-rc1", "1.0.0") == "1.0.0"
+
+    # prerelease tags by ASCII order; rc10 < rc2 because these are alphanumeric
+    # identifiers compared lexically, NOT numerically (matches Julia's v"...")
+    @test resolve_max("1.0.0-alpha", "1.0.0-beta", "1.0.0-rc") == "1.0.0-rc"
+    @test resolve_max("1.1.1-rc10", "1.1.1-rc2") == "1.1.1-rc2"
+
+    # a numeric identifier is always below a non-numeric one
+    @test resolve_max("1.0.0-1", "1.0.0-alpha") == "1.0.0-alpha"
+
+    # all-digit identifiers compared numerically (so .11 > .2, not lexically)
+    @test resolve_max("1.0.0-beta.2", "1.0.0-beta.11") == "1.0.0-beta.11"
+
+    # a larger set of fields outranks a shorter prefix of it
+    @test resolve_max("1.0.0-alpha", "1.0.0-alpha.1") == "1.0.0-alpha.1"
+
+    # a hyphen is a legal identifier character, not a separator: x-y-z is one
+    # identifier, and the spec's "--" is a field of its own
+    @test resolve_max("1.0.0-x-y-w", "1.0.0-x-y-z") == "1.0.0-x-y-z"
+    @test resolve_max("1.0.0-x-y-z", "1.0.0-x-y-z.--") == "1.0.0-x-y-z.--"
+
+    # build metadata is ignored for precedence: 1.0.0+build is the release
+    # 1.0.0, which outranks the prerelease rc1
+    @test resolve_max("1.0.0-rc1", "1.0.0+build") == "1.0.0+build"
+
+    # the full SemVer precedence example, link by link (each pair's max is the
+    # higher one), and the maximum of the whole set is the top of the chain
+    chain = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta",
+             "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"]
+    for i in 1:length(chain)-1
+        @test resolve_max(chain[i], chain[i+1]) == chain[i+1]
+    end
+    @test resolve_max(chain...) == "1.0.0"
+end
 @testset "prerelease resolution" begin
     # Fabricated unsigned versions (NO_VERIFY=1) make the whole resolution
     # matrix testable: which build each spec picks out of a manifest that mixes
@@ -663,6 +733,20 @@ end
     r = run_script_y("add", "1.3.1"; env)
     @test r.code == 1
     @test occursin("version mismatch: requested 1.3.1 but tarball reports '1.3.0'", r.err)
+
+    # prerelease-vs-prerelease ordering (no final release in the line): `pre`
+    # must pick the greatest tag per semver. alpha < beta < rc by ASCII order,
+    # and crucially rc10 < rc2: these are alphanumeric identifiers compared
+    # lexically (not numerically), so '1' < '2' at the third char makes rc2 the
+    # winner - exactly as Julia's v"1.5.0-rc10" < v"1.5.0-rc2".
+    cleanup()
+    mr = fake_mirror("1.5.0-alpha", "1.5.0-beta1", "1.5.0-rc2", "1.5.0-rc10")
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr",
+           "INSTALL_JULIA_NO_VERIFY" => "1")
+    r = run_script_y("add", "pre"; env)
+    @test r.code == 0
+    @test occursin("Resolved 'pre' -> 1.5.0-rc2 (release)", r.err)
+    @test isfile(joinpath(installdir, "julia-1.5.0-rc2/bin/julia"))
 end
 @testset "resolution errors" begin
     cleanup()

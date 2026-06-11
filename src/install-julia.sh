@@ -149,11 +149,91 @@ http_ok() {
 	curl -fsIL -o /dev/null "$1" 2>/dev/null
 }
 
-# Read versions on stdin, print the greatest. The sed mapping makes prereleases
-# sort *below* their final release: plain `sort -V` ranks 1.13.0-rc1 above 1.13.0,
-# but `~` sorts before everything in version order (the Debian convention), so
-# 1.13.0~rc1 < 1.13.0. We map -> ~ for the sort and back again on the way out.
-version_max() { sed 's/-/~/g' | sort -V | tail -n 1 | sed 's/~/-/g'; }
+# Compare versions in semver precedence order, in-shell, so picking the greatest
+# needs no `sort -V` (a GNU extension) - no sort at all.
+
+# _lex_lt A B: true iff A sorts strictly before B in ASCII order. Walk both
+# strings; at the first differing character compare the two bytes (printf '%d'
+# "'c" is the POSIX way to read a char's value), and a string that runs out
+# first is the smaller (it is a prefix of the other).
+_lex_lt() {
+	_lex_lt_a=$1; _lex_lt_b=$2
+	while : ; do
+		[ -z "$_lex_lt_b" ] && return 1
+		[ -z "$_lex_lt_a" ] && return 0
+		_lex_lt_ca=${_lex_lt_a%"${_lex_lt_a#?}"}; _lex_lt_cb=${_lex_lt_b%"${_lex_lt_b#?}"}
+		if [ "$_lex_lt_ca" != "$_lex_lt_cb" ]; then
+			[ "$(printf '%d' "'$_lex_lt_ca")" -lt "$(printf '%d' "'$_lex_lt_cb")" ]
+			return
+		fi
+		_lex_lt_a=${_lex_lt_a#?}; _lex_lt_b=${_lex_lt_b#?}
+	done
+}
+
+# version_gt A B: exit 0 iff version A is strictly greater than B. One pass over
+# both versions a field at a time, with _state tracking the section: the numeric
+# MAJOR.MINOR.PATCH core, then (after '-') the prerelease. A '+' begins build
+# metadata, which semver ignores for precedence, so it is treated as the end.
+# Per field: core fields compare numerically; prerelease identifiers compare
+# numerically when both are all-digit, in ASCII order when either holds a letter
+# (so rc10 < rc2), with a numeric identifier always below a non-numeric one; and
+# - all preceding identifiers equal - a release outranks a prerelease and a
+# longer prerelease outranks a shorter prefix of it. Only version_max calls
+# this, on semver input.
+version_gt() {
+	[ "$1" = "$2" ] && return 1
+	version_gt_a=$1; version_gt_b=$2
+	version_gt_state=core
+	while : ; do
+		# Leading field and the separator after it. In the core a field ends at a
+		# '.', the '-' that opens the prerelease, or the '+' that opens build; in
+		# the prerelease only at a '.' or '+', because a '-' there is a legal
+		# identifier character (e.g. the tag x-y-z.--), not a separator.
+		if [ "$version_gt_state" = core ]; then
+			version_gt_fa=${version_gt_a%%[.+-]*}; version_gt_fb=${version_gt_b%%[.+-]*}
+		else
+			version_gt_fa=${version_gt_a%%[.+]*};  version_gt_fb=${version_gt_b%%[.+]*}
+		fi
+		version_gt_ra=${version_gt_a#"$version_gt_fa"}; version_gt_sa=${version_gt_ra%"${version_gt_ra#?}"}
+		version_gt_rb=${version_gt_b#"$version_gt_fb"}; version_gt_sb=${version_gt_rb%"${version_gt_rb#?}"}
+		[ "$version_gt_sa" = + ] && version_gt_sa=''    # build metadata: precedence ends here
+		[ "$version_gt_sb" = + ] && version_gt_sb=''
+		if [ "$version_gt_fa" != "$version_gt_fb" ]; then
+			if [ "$version_gt_state" = core ]; then
+				[ "$version_gt_fa" -gt "$version_gt_fb" ]; return       # numeric core field
+			fi
+			version_gt_na=0; case $version_gt_fa in *[!0-9]*) version_gt_na=1 ;; esac  # 1 = has a non-digit
+			version_gt_nb=0; case $version_gt_fb in *[!0-9]*) version_gt_nb=1 ;; esac
+			if [ "$version_gt_na" != "$version_gt_nb" ]; then [ "$version_gt_na" -gt "$version_gt_nb" ]; return; fi  # numeric < alnum
+			if [ "$version_gt_na" = 0 ]; then [ "$version_gt_fa" -gt "$version_gt_fb" ]; return; fi  # both numeric
+			if _lex_lt "$version_gt_fa" "$version_gt_fb"; then return 1; else return 0; fi  # both alnum, ASCII
+		fi
+		# Fields equal: the following separators decide.
+		if [ "$version_gt_sa" = "$version_gt_sb" ]; then
+			[ -z "$version_gt_sa" ] && return 1               # both versions end: equal
+			[ "$version_gt_sa" = - ] && version_gt_state=pre  # both enter the prerelease
+			version_gt_a=${version_gt_ra#?}; version_gt_b=${version_gt_rb#?}   # drop the shared separator
+			continue
+		fi
+		[ "$version_gt_sa" = - ] && return 1   # A enters a prerelease, B does not: A is lower
+		[ "$version_gt_sb" = - ] && return 0   # B enters a prerelease, A does not: A is higher
+		[ -n "$version_gt_sa" ]; return        # length mismatch (not seen in semver): longer wins
+	done
+}
+
+# Read versions on stdin, print the greatest. Empty input prints an empty line
+# and returns 0 - callers guard with [ -n "$result" ] - so a no-match never
+# aborts under set -e. A plain fold, no sort.
+version_max() {
+	version_max_best=''
+	while IFS= read -r version_max_v; do
+		[ -n "$version_max_v" ] || continue
+		if [ -z "$version_max_best" ] || version_gt "$version_max_v" "$version_max_best"; then
+			version_max_best=$version_max_v
+		fi
+	done
+	printf '%s\n' "$version_max_best"
+}
 
 # --------------------------------------------------------------------------- #
 # Architecture                                                                #
@@ -218,10 +298,10 @@ pick_stable() {
 		_cands=$(printf '%s\n' "$_cands" | grep -E "^$(reesc "$_prefix")(\.|$)" || true)
 	[ "$_stable_only" = 1 ] &&
 		_cands=$(printf '%s\n' "$_cands" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
-	# version_max ends in sed (exit 0), so the no-match case returns success with
-	# empty output rather than a nonzero status that, under set -e, would abort the
-	# `_full=$(pick_stable ...)` assignment before the caller's own `[ -n "$_full" ]`
-	# guard could emit a helpful message.
+	# version_max returns success with empty output for empty input, so the
+	# no-match case doesn't return a nonzero status that, under set -e, would abort
+	# the `_full=$(pick_stable ...)` assignment before the caller's own
+	# `[ -n "$_full" ]` guard could emit a helpful message.
 	printf '%s\n' "$_cands" | grep -v '^$' | version_max
 }
 
@@ -585,12 +665,14 @@ match_installed() {
 		*)
 			# Pure-numeric prefix: sweep every build whose version starts with it
 			# at a component boundary ('.' or '-'), with any ~arch tag stripped first.
+			# Sort the bare ids (POSIX numeric sort, by dotted field; the julia-
+			# prefix would defeat -k1,1n) and re-add the prefix afterward.
 			_hits=$(ls "$INSTALL_DIR" 2>/dev/null | sed -n 's/^julia-//p' |
 				while IFS= read -r _id; do
 					case "${_id%%~*}" in
-						"$_q" | "$_q".* | "$_q"-*) printf 'julia-%s\n' "$_id" ;;
+						"$_q" | "$_q".* | "$_q"-*) printf '%s\n' "$_id" ;;
 					esac
-				done | sort -V)
+				done | sort -t. -k1,1n -k2,2n -k3,3n | sed 's/^/julia-/')
 			[ -n "$_hits" ] && { printf '%s\n' "$_hits"; return 0; } ;;
 	esac
 	# Exact id: a fully-qualified prerelease/~arch name, a rolling build, or a
@@ -730,7 +812,7 @@ cmd_list() {
 	if [ ! -d "$INSTALL_DIR" ]; then echo "No versions installed."; return 0; fi
 	_default=""
 	[ -L "$SYMLINK_DIR/julia" ] && _default=$(readlink "$SYMLINK_DIR/julia")
-	ls "$INSTALL_DIR" 2>/dev/null | sed -n 's/^julia-//p' | sort -V | while read -r _v; do
+	ls "$INSTALL_DIR" 2>/dev/null | sed -n 's/^julia-//p' | sort -t. -k1,1n -k2,2n -k3,3n | while read -r _v; do
 		_mark=" "
 		[ "$_default" = "$INSTALL_DIR/julia-$_v/bin/julia" ] && _mark="*"
 		printf ' %s %s\n' "$_mark" "$_v"
