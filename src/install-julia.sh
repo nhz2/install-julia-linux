@@ -117,7 +117,7 @@ confirm() {
 	# source, and a stdin fallback would consume the next script line as the answer.
 	# No tty means we can't ask, so exit 1 and point at -y for non-interactive use.
 	[ "$NO_CONFIRM" -eq 1 ] && return 0
-	if ! true </dev/tty; then
+	if ! ( : </dev/tty ) 2>/dev/null; then
 		warn "no terminal available to confirm; exiting (pass -y to proceed non-interactively)"
 		exit 1
 	fi
@@ -286,13 +286,16 @@ resolve_spec() {
 	# itself happens once R_LABEL is set, below.
 	case "$_spec" in
 		*"~"*)
-			_arch=${_spec##*~}
+			# Everything after the LEFTMOST ~ is the arch token (a version never
+			# contains ~), so a stray second ~ ("1.0.0~x86~x64") lands inside the
+			# token and is rejected below instead of being silently dropped.
+			_arch=${_spec#*~}
 			# Require a non-empty bare token: it's interpolated into the sed
 			# expressions and download URL (a metacharacter could break out of
 			# them) and becomes part of the install-dir name. Unknown-but-well-
 			# formed arches still pass through.
-			case "$_arch" in "" | *[!A-Za-z0-9_]*)
-				die "bad arch override in '$_spec' (arch must be one or more of A-Za-z0-9_)" ;;
+			case "$_arch" in "" | *[!A-Za-z0-9_-]*)
+				die "bad arch override in '$_spec' (arch must be one or more of A-Za-z0-9_-)" ;;
 			esac
 			ARCH_SUFFIX="~$_arch"; arch_setup "$_arch"; _spec=${_spec%%~*} ;;
 		*)     ARCH_SUFFIX=""; arch_setup ;;
@@ -428,8 +431,9 @@ install_resolved() {
 
 	# Version read from the tarball's own top-level dir name (Julia names it after the
 	# version) - never by running the binary. Used for display, and below to bind a
-	# release tarball to the version we asked for.
-	_realver=$(tar -tzf "$_tar" 2>/dev/null | sed -n '1s#^julia-\([^/]*\)/.*#\1#p')
+	# release tarball to the version we asked for. Some tar writers list the dir
+	# entry without a trailing slash, so the slash is not part of the match.
+	_realver=$(tar -tzf "$_tar" 2>/dev/null | sed -n '1s#^julia-\([^/]*\).*#\1#p')
 
 	# Version-binding: GPG proves the tarball is a genuine Julia build but not *which*
 	# one, so a hostile endpoint could serve a different (older, still-signed) release
@@ -489,10 +493,22 @@ install_resolved() {
 # --------------------------------------------------------------------------- #
 
 link() {
-	# link NAME TARGET - create/replace SYMLINK_DIR/NAME -> TARGET.
-	# -n so an existing link to a directory is replaced, not dereferenced.
+	# link NAME TARGET - create/replace SYMLINK_DIR/NAME -> TARGET, atomically.
+	# Not `ln -sfn` (unlink+symlink: NAME briefly missing, racing links can
+	# die on EEXIST). Build the link in scratch and rename(2) it into place:
+	# the scratch link is itself named NAME and mv's stated target is
+	# SYMLINK_DIR (install_resolved's trick, in lieu of the non-POSIX -T), so
+	# rename replaces an existing NAME without dereferencing it. A hard kill
+	# can leak a .link.* scratch dir; never reaped (it may be a live peer's),
+	# but tiny, hidden, and off every scan.
 	mkdir -p "$SYMLINK_DIR"
-	ln -sfn "$2" "$SYMLINK_DIR/$1" || die "could not create symlink $1"
+	_lnk=$(mktemp -d "$SYMLINK_DIR/.link.XXXXXXXXXX") ||
+		die "could not create scratch dir in $SYMLINK_DIR"
+	if ! ln -s "$2" "$_lnk/$1" || ! mv -f "$_lnk/$1" "$SYMLINK_DIR/"; then
+		rm -rf "$_lnk" 2>/dev/null || :
+		die "could not create symlink $1"
+	fi
+	rmdir "$_lnk" 2>/dev/null || :
 	info "symlink $1 -> $2"
 }
 
@@ -579,10 +595,13 @@ match_installed() {
 }
 
 cmd_install() {
-	# cmd_install SPEC SETDEFAULT
-	_spec=$1 _setdefault=$2
-	resolve_spec "$_spec"
-	info "Resolved '$_spec' -> $R_LABEL ($R_KIND)"
+	# cmd_install SPEC SETDEFAULT. The spec is read from $1 both times, never
+	# copied into a named variable: shell variables are global, and resolve_spec
+	# strips ~arch from its own _spec - which would alias a copy here and make
+	# the message below misquote what the user typed.
+	_setdefault=$2
+	resolve_spec "$1"
+	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
 	mkdir -p "$INSTALL_DIR"
 	_destname="julia-$R_LABEL"
 	# A stable release is immutable, so once its dir exists the resolved label is that
@@ -733,7 +752,8 @@ Commands:
   install-julia.sh switch <ver|path>  point default julia at an installed
                                       version or a path to a julia binary
   install-julia.sh remove <version>   delete a version and its symlinks
-  install-julia.sh list               list installed versions
+                                      (alias: rm)
+  install-julia.sh list               list installed versions (alias: ls)
   install-julia.sh                    install the latest stable release
 
 Options:
@@ -745,6 +765,8 @@ Options:
 Versions:
   1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<num>
   (append ~x86_64, ~x86, or ~aarch64 to override the architecture)
+  (switch resolves a numeric prefix to the greatest installed stable
+  patch; prereleases, nightlies, and ~arch builds need their exact id)
 
 See README.md for full documentation.
 EOF
@@ -786,7 +808,7 @@ main() {
 		switch)
 			[ -n "$_arg" ] || die "usage: install-julia.sh switch <version|path>"
 			cmd_switch "$_arg" ;;
-		remove | rm | uninstall)
+		remove | rm)
 			[ -n "$_arg" ] || die "usage: install-julia.sh remove <version>"
 			cmd_remove "$_arg" ;;
 		list | ls)

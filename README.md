@@ -4,12 +4,12 @@ A POSIX shell script that installs and manages
 [Julia](https://julialang.org) on Linux. It is an alternative to [`jill.py`](https://github.com/johnnychen94/jill.py)
 or [`juliaup`](https://github.com/JuliaLang/juliaup): it downloads official Julia
 binaries, verifies them with a bundled GPG key, unpacks them 
-and keeps a tidy set of `julia`, `julia-1`, `julia-1.12`, `julia-1.12.6`
+and keeps a tidy set of `julia`, `julia-X`, `julia-X.Y`, `julia-X.Y.Z`
 symlinks on your `PATH`.
 
 Vibe coded with claude code.
 
-Runtime dependencies: `curl`, `tar`, `gpgv`, and `base64`
+Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, and `base64`
 
 ## Install
 
@@ -39,9 +39,9 @@ install-julia.sh [options] [command] [version]
 | `install-julia.sh`                   | Install the latest stable release and point the default `julia` at it.       |
 | `install-julia.sh <version>`         | Install `<version>` and make it the default `julia`.                         |
 | `install-julia.sh add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
-| `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. **Installs nothing.** |
-| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes **all** matching builds — releases, prereleases, the branch nightly, and every per-arch copy — so `remove 1.12` clears the whole 1.12 line, while `remove 1.1` never touches `1.10.x`. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. One confirmation for the batch. |
-| `install-julia.sh list`              | List installed versions (the default is marked with `*`).                    |
+| `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the **greatest installed stable patch** under it — never a prerelease, nightly, or `~arch` copy; those need their exact id (`1.13.0-rc1`, `1.12-nightly`, `1.12.6~x86`). **Installs nothing.** |
+| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes **all** matching builds — releases, prereleases, the branch nightly, and every per-arch copy — so `remove 1.12` clears the whole 1.12 line, while `remove 1.1` never touches `1.10.x`. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. One confirmation for the batch. Alias: `rm`. |
+| `install-julia.sh list`              | List installed versions (the default is marked with `*`). Alias: `ls`.       |
 
 ### Options
 

@@ -1,0 +1,21 @@
+{
+  "1.0.0": {
+    "files": [
+      {
+        "triplet": "x86_64-linux-gnu",
+        "git-tree-sha256": "66e5c35fb9675ab099879557d43e0f6b6c0f502ce1c39353541eb6c8bad9a90c",
+        "size": 88896624,
+        "url": "https://julialang-s3.julialang.org/bin/linux/x64/1.0/julia-1.0.0-linux-x86_64.tar.gz",
+        "extension": "tar.gz",
+        "kind": "archive",
+        "asc": "-----BEGIN PGP SIGNATURE-----\n\niQJLBAABCAA1FiEENnPfUp2QSUd/drN1ZuPH3APW5JUFAltsEhkXHGJ1aWxkYm90\nQGp1bGlhbGFuZy5vcmcACgkQZuPH3APW5JUX4Q//TX1IIuH8+fxpEZEPOlnpz8n2\nkZ3ZdZRhQY3iVrUuYvsyjrpkik2tK/Nh+6Ud2YKP7ylykLiQDgjLhOd/PG4wTIhZ\ntmGa2JGRTd31ngwbcvGNz+ifeXXplMRz99MPHCMni8T0k7NUVvt4quDm1p4Odo8S\nSr1ntJFlQhEDh+nRWhEomZJJdFSrz7OOlq8tBeCwDL/NQLIwbw8gDNxPR/v7ukCV\n4xm4jeT/DvQDTI5qUT5eSyQ9AeMvtsCBXMZzI4CW+NjY4XXMfQM3WUCGe6fpsZ65\nPsCJ85uhccmUDQ9vit3kBFi324G1tWsZqVsKRIByEhTzf1IoonhQsGAqOepugH4I\nhCgX+RIW2myokaIhR30GrPHExWxq22iDkLcnNvs0v37wwoPJP7MwEmTNPkgEu0FJ\n3jq4ZhIYxJGURN034XTdQJrV8kduqkxGw21e+XyWICcw+dP5OpAIA/rsZ0EwIOX9\n+KACFoc4sHb/mK15ZnZkzoBybudE0UwHyye2yVoGvzDutOmMAYQF82LXL2L1pf+W\nTukab/5qNLE/XqmmGopoFpKO1S9YZdv6KQFLsb1vlhQyTkjpe6c2F4UinNIMgMsP\nUbV5x9eri7V/eLR3EYxaxISadHyK2+f0ibrrdmoODqCsBxmn4nhd1dWTthdYqLS5\nry2lcX+d+EPXdZcBbJ4=\n=Lj9L\n-----END PGP SIGNATURE-----\n",
+        "arch": "x86_64",
+        "git-tree-sha1": "8a46bd0b48f84e2d83b88f12f167929dba5a0fd4",
+        "sha256": "bea4570d7358016d8ed29d2c15787dbefaea3e746c570763e7ad6040f17831f3",
+        "version": "1.0.0",
+        "os": "linux"
+      }
+    ],
+    "stable": true
+  }
+}
