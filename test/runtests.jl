@@ -95,7 +95,7 @@ end
 
 
 @testset "shellcheck" begin
-    run(`shellcheck $(script) --severity=warning`)
+    @test success(run(`shellcheck $(script) --severity=warning`))
 end
 @testset "version" begin
     r = run_script("--version")
@@ -285,9 +285,9 @@ end
     @test r.code == 1
     @test r.err == "error: required command not found: curl\n"
 
-    # a PATH with curl/tar/mktemp but no gpgv: verification needs gpgv...
+    # a PATH with the always-on tools but no gpgv: verification needs gpgv...
     farm = mktempdir()
-    for tool in ("curl", "tar", "mktemp")
+    for tool in ("curl", "tar", "mktemp", "readlink")
         symlink(Sys.which(tool), joinpath(farm, tool))
     end
     r = run_script("list"; env=("PATH" => farm,))

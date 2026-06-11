@@ -153,7 +153,7 @@ http_ok() {
 # sort *below* their final release: plain `sort -V` ranks 1.13.0-rc1 above 1.13.0,
 # but `~` sorts before everything in version order (the Debian convention), so
 # 1.13.0~rc1 < 1.13.0. We map -> ~ for the sort and back again on the way out.
-version_max() { sed 's/-/~/g' | sort -V | tail -1 | sed 's/~/-/g'; }
+version_max() { sed 's/-/~/g' | sort -V | tail -n 1 | sed 's/~/-/g'; }
 
 # --------------------------------------------------------------------------- #
 # Architecture                                                                #
@@ -196,9 +196,14 @@ reesc() { printf '%s' "$1" | sed 's/\./\\./g'; }
 stable_versions() {
 	_json=$(http_get "$STABLE_BASE/bin/versions.json") ||
 		die "could not fetch $STABLE_BASE/bin/versions.json (network/HTTP error)"
+	# Break the JSON on quotes and slashes so every string token and path component
+	# lands on its own line, then strip the bare tarball filenames to their version.
+	# (POSIX sed can't emit multiple matches per line the way GNU `grep -o` can, so
+	# tr - which is POSIX - does the splitting first.) The leading [0-9] keeps this
+	# to concrete releases and skips any rolling "julia-latest-..." pointer.
 	printf '%s\n' "$_json" |
-		grep -oE "julia-[0-9][^\"/]*-linux-$ARCH_FILE\.tar\.gz" |
-		sed -e 's/^julia-//' -e "s/-linux-$ARCH_FILE\\.tar\\.gz\$//" |
+		tr '"/' '\n\n' |
+		sed -n "s/^julia-\\([0-9].*\\)-linux-$ARCH_FILE\\.tar\\.gz\$/\\1/p" |
 		sort -u
 }
 
@@ -804,6 +809,7 @@ main() {
 	need curl
 	need tar
 	need mktemp
+	need readlink
 	[ "$NO_VERIFY" = 1 ] || { need gpgv; need base64; }
 
 	case "$_cmd" in

@@ -9,7 +9,7 @@ symlinks on your `PATH`.
 
 Vibe coded with claude code.
 
-Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, and `base64`
+Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
 
 ## Install
 
