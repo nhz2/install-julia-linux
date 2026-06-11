@@ -3,7 +3,7 @@
 # A POSIX shell script that installs and manages
 # [Julia](https://julialang.org) on Linux. It is an alternative to [`jill.py`](https://github.com/johnnychen94/jill.py)
 # or [`juliaup`](https://github.com/JuliaLang/juliaup): it downloads official Julia
-# binaries, verifies them with a bundled GPG key, unpacks them 
+# binaries, verifies them with a bundled GPG key, unpacks them
 # and keeps a tidy set of `julia`, `julia-1`, `julia-1.12`, `julia-1.12.6`
 # symlinks on your `PATH`.
 
@@ -170,34 +170,92 @@ _lex_lt() {
 	done
 }
 
-# version_gt A B: exit 0 iff version A is strictly greater than B. One pass over
-# both versions a field at a time, with _state tracking the section: the numeric
-# MAJOR.MINOR.PATCH core, then (after '-') the prerelease. A '+' begins build
-# metadata, which semver ignores for precedence, so it is treated as the end.
-# Per field: core fields compare numerically; prerelease identifiers compare
-# numerically when both are all-digit, in ASCII order when either holds a letter
-# (so rc10 < rc2), with a numeric identifier always below a non-numeric one; and
-# - all preceding identifiers equal - a release outranks a prerelease and a
-# longer prerelease outranks a shorter prefix of it. Only version_max calls
-# this, on semver input.
+is_alphanumdashdot() {
+	case "$1" in
+		*[!0-9A-Za-z.-]*) return 1 ;;     # any char outside the set
+		*) return 0 ;;
+	esac
+}
+
+is_numsegment() {
+	case "$1" in
+		'') return 1 ;; # reject empty
+		*[!0-9]*) return 1 ;; # any char outside the set
+		0) return 0 ;;
+		0*) return 1 ;; # no leading zeros
+		*) return 0 ;;
+	esac
+}
+
+is_prereleasesegment() {
+	case "$1" in
+		'') return 1 ;; # reject empty
+		*[!0-9A-Za-z-]*) return 1 ;; # any char outside the set
+		*[!0-9]*) return 0 ;; # non numeric
+		0) return 0 ;;
+		0*) return 1 ;; # no leading zeros
+		*) return 0 ;; # valid numeric
+	esac
+}
+
+# check if valid semver build metadata suffix is currently not supported
+is_version() {
+	is_alphanumdashdot "$1" || return 1
+	case "$1" in
+		*.*.*) : ;;
+		*) return 1 ;;
+	esac
+	check_version_rest="$1"
+	is_numsegment "${check_version_rest%%.*}" || return 1
+	check_version_rest=${check_version_rest#*.}
+	is_numsegment "${check_version_rest%%.*}" || return 1
+	check_version_rest=${check_version_rest#*.}
+	# Y-pre
+	is_numsegment "${check_version_rest%%-*}" || return 1
+	check_version_rest=${check_version_rest#"${check_version_rest%%-*}"}
+	# -pre or empty
+	[ -z "$check_version_rest" ] && return 0
+	# -pre
+	check_version_rest=${check_version_rest#-}
+	# pre
+	case "$check_version_rest" in
+		*. | .* | *..* | '') return 1 ;;
+		*) : ;;
+	esac
+	# check prerelease
+	while : ; do
+		is_prereleasesegment "${check_version_rest%%.*}" || return 1
+		case "$check_version_rest" in
+			*.*) check_version_rest=${check_version_rest#*.} ;;  # more segments: drop this one + its dot
+			*)   break ;;                                        # last segment: done
+		esac
+	done
+	return 0
+}
+
+
+# version_gt A B: return 0 iff version A is strictly greater than B.
+# Die if A or B are not valid semver versions or contain a build metadata suffix.
+# One pass over both versions a field at a time.
 version_gt() {
+	# validation to get started
+	is_version "$1" || die "could not parse version $1"
+	is_version "$2" || die "could not parse version $2"
 	[ "$1" = "$2" ] && return 1
 	version_gt_a=$1; version_gt_b=$2
 	version_gt_state=core
 	while : ; do
 		# Leading field and the separator after it. In the core a field ends at a
-		# '.', the '-' that opens the prerelease, or the '+' that opens build; in
-		# the prerelease only at a '.' or '+', because a '-' there is a legal
+		# '.', the '-' that opens the prerelease; in
+		# the prerelease only at a '.', because a '-' there is a legal
 		# identifier character (e.g. the tag x-y-z.--), not a separator.
 		if [ "$version_gt_state" = core ]; then
-			version_gt_fa=${version_gt_a%%[.+-]*}; version_gt_fb=${version_gt_b%%[.+-]*}
+			version_gt_fa=${version_gt_a%%[.-]*}; version_gt_fb=${version_gt_b%%[.-]*}
 		else
-			version_gt_fa=${version_gt_a%%[.+]*};  version_gt_fb=${version_gt_b%%[.+]*}
+			version_gt_fa=${version_gt_a%%.*};  version_gt_fb=${version_gt_b%%.*}
 		fi
 		version_gt_ra=${version_gt_a#"$version_gt_fa"}; version_gt_sa=${version_gt_ra%"${version_gt_ra#?}"}
 		version_gt_rb=${version_gt_b#"$version_gt_fb"}; version_gt_sb=${version_gt_rb%"${version_gt_rb#?}"}
-		[ "$version_gt_sa" = + ] && version_gt_sa=''    # build metadata: precedence ends here
-		[ "$version_gt_sb" = + ] && version_gt_sb=''
 		if [ "$version_gt_fa" != "$version_gt_fb" ]; then
 			if [ "$version_gt_state" = core ]; then
 				[ "$version_gt_fa" -gt "$version_gt_fb" ]; return       # numeric core field
@@ -217,7 +275,12 @@ version_gt() {
 		fi
 		[ "$version_gt_sa" = - ] && return 1   # A enters a prerelease, B does not: A is lower
 		[ "$version_gt_sb" = - ] && return 0   # B enters a prerelease, A does not: A is higher
-		[ -n "$version_gt_sa" ]; return        # length mismatch (not seen in semver): longer wins
+		# length mismatch longer wins
+		if [ -n "$version_gt_sa" ]; then
+			return 0
+		else
+			return 1
+		fi
 	done
 }
 
@@ -281,10 +344,20 @@ stable_versions() {
 	# (POSIX sed can't emit multiple matches per line the way GNU `grep -o` can, so
 	# tr - which is POSIX - does the splitting first.) The leading [0-9] keeps this
 	# to concrete releases and skips any rolling "julia-latest-..." pointer.
+	# Keep only versions is_version can parse: version_max dies on anything it
+	# can't compare, so one weird manifest entry (e.g. a future +build suffix)
+	# would otherwise break every discovery spec. Skip-and-warn instead.
 	printf '%s\n' "$_json" |
 		tr '"/' '\n\n' |
 		sed -n "s/^julia-\\([0-9].*\\)-linux-$ARCH_FILE\\.tar\\.gz\$/\\1/p" |
-		sort -u
+		sort -u |
+		while IFS= read -r _sv; do
+			if is_version "$_sv"; then
+				printf '%s\n' "$_sv"
+			else
+				warn "ignoring unparseable version '$_sv' in versions.json"
+			fi
+		done
 }
 
 # pick_stable PREFIX STABLE_ONLY -> greatest matching full version ("" if none).

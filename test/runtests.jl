@@ -656,14 +656,21 @@ end
     # a larger set of fields outranks a shorter prefix of it
     @test resolve_max("1.0.0-alpha", "1.0.0-alpha.1") == "1.0.0-alpha.1"
 
+    @test resolve_max("1.0.0--", "1.0.0-a") == "1.0.0-a"
+    @test resolve_max("1.0.0-a", "1.0.0--") == "1.0.0-a"
+    @test resolve_max("1.0.0-0.0", "1.0.0-0") == "1.0.0-0.0"
+    @test resolve_max("1.0.0-0", "1.0.0-0.0") == "1.0.0-0.0"
+
+    # non versions and versions with build metadata in the manifest get ignored
+    @test resolve_max("1.0.0", "2.0.00") == "1.0.0"
+    @test resolve_max("2.0.00", "1.0.0") == "1.0.0"
+    @test resolve_max("1.0.0", "2.0.0+build") == "1.0.0"
+    @test resolve_max("2.0.0+build", "1.0.0") == "1.0.0"
+
     # a hyphen is a legal identifier character, not a separator: x-y-z is one
     # identifier, and the spec's "--" is a field of its own
     @test resolve_max("1.0.0-x-y-w", "1.0.0-x-y-z") == "1.0.0-x-y-z"
     @test resolve_max("1.0.0-x-y-z", "1.0.0-x-y-z.--") == "1.0.0-x-y-z.--"
-
-    # build metadata is ignored for precedence: 1.0.0+build is the release
-    # 1.0.0, which outranks the prerelease rc1
-    @test resolve_max("1.0.0-rc1", "1.0.0+build") == "1.0.0+build"
 
     # the full SemVer precedence example, link by link (each pair's max is the
     # higher one), and the maximum of the whole set is the top of the chain
