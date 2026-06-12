@@ -9,10 +9,16 @@ symlinks on your `PATH`.
 
 Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
 
+## One line install of the latest version of Julia
+
+```sh
+curl -fsSL https://github.com/nhz2/install-julia.sh/releases/download/latest/install-julia.sh | sh
+```
+
 ## Install
 
 ```sh
-curl -fsSLO https://example.com/install-julia.sh   # or just copy the file
+curl -fsSLO https://github.com/nhz2/install-julia.sh/releases/download/latest/install-julia.sh   # or just copy the file
 chmod +x install-julia.sh
 mv install-julia.sh ~/.local/bin/                  # somewhere on your PATH
 ```
