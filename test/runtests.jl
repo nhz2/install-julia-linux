@@ -201,6 +201,13 @@ end
     @test occursin("Removed julia-1.0.0", r.err)
     @test isempty(readdir(installdir))
 
+    # list over an empty-but-existing INSTALL_DIR prints nothing, same as a
+    # missing one (remove leaves INSTALL_DIR behind, so this is the post-rm state)
+    @test isdir(installdir)
+    r = run_script("list")
+    @test r.code == 0
+    @test r.out == ""
+
     # uninstall is NOT a command; like any unknown word it parses as a version spec
     r = run_script_y("uninstall")
     @test r.code == 1
@@ -309,10 +316,10 @@ end
     @test r.err == "error: required command not found: gpgv\n"
 
     # ...but NO_VERIFY=1 drops that requirement, and `list` with nothing
-    # installed needs no external tools at all
+    # installed needs no external tools at all (and prints nothing)
     r = run_script("list"; env=("PATH" => farm, "INSTALL_JULIA_NO_VERIFY" => "1"))
     @test r.code == 0
-    @test r.out == "No versions installed.\n"
+    @test r.out == ""
 end
 @testset "staging reap" begin
     # remove reaps the staging namespace for exactly its version - an exact
@@ -628,6 +635,19 @@ end
     @test r.code == 0
     @test occursin("3 installed versions match '1'", r.err)
     @test isempty(readdir(installdir))
+
+    # a full-version prefix sweeps that version's per-arch copies too (the ~arch
+    # tag is stripped before the boundary match), alongside its prereleases - so
+    # `remove 1.3.0` clears 1.3.0, 1.3.0-rc1, and 1.3.0~x86 together, while a
+    # different patch in the same minor (1.3.1) is left alone
+    cleanup()
+    for v in ("1.3.0", "1.3.0-rc1", "1.3.0~x86", "1.3.0~aarch64", "1.3.1")
+        mkpath(joinpath(installdir, "julia-$v/bin"))
+    end
+    r = run_script_y("remove", "1.3.0")
+    @test r.code == 0
+    @test occursin("4 installed versions match '1.3.0'", r.err)
+    @test readdir(installdir) == ["julia-1.3.1"]
 end
 @testset "version comparison" begin
     # The SemVer comparator that replaced sort -V is exercised through real
@@ -758,7 +778,7 @@ end
 @testset "resolution errors" begin
     cleanup()
     # a manifest fetch failure must die loudly, not masquerade as "no such
-    # version" (the set -e subtlety pick_stable's comment describes)
+    # version" (the set -e subtlety pick_latest's comment describes)
     # (curl -S prints its own diagnostic line first, then the script dies)
     r = run_script_y("add", "1"; env=("INSTALL_JULIA_STABLE_URL" => "file:///nonexistent",))
     @test r.code == 1
@@ -776,7 +796,7 @@ end
     empty = fake_mirror()
     r = run_script_y(; env=("INSTALL_JULIA_STABLE_URL" => "file://$empty",))
     @test r.code == 1
-    @test r.err == "error: no matching stable release for x86_64\n"
+    @test r.err == "error: no stable release matching '' for x86_64\n"
 
     # sort -V across the two-digit minor boundary: 1.10.0 outranks 1.9.9
     # (a plain lexical sort would invert this)
@@ -922,7 +942,7 @@ end
 
     r = run_script_y("add", "x-nightly"; env)
     @test r.code == 1
-    @test r.err == "error: bad nightly spec: x-nightly\n"
+    @test r.err == "error: unrecognized version specifier: x-nightly\n"
 
     # pr builds are unsigned by design: install skips verification with a
     # warning even when verification is otherwise on
@@ -933,10 +953,10 @@ end
     @test !ispath(joinpath(symlinkdir, "julia-1"))
 
     # a pr with no published build dies on the HEAD probe, before installing anything
-    r = run_script_y("add", "pr999"; env)
+    r = run_script_y("add", "pr999999999"; env)
     @test r.code == 1
-    @test occursin("no build published for PR #999", r.err)
-    @test !isdir(joinpath(installdir, "julia-pr999"))
+    @test occursin("download failed", r.err)
+    @test !isdir(joinpath(installdir, "julia-pr999999999"))
 
     r = run_script_y("add", "pr12ab"; env)
     @test r.code == 1

@@ -89,11 +89,10 @@ EOF
 NO_CONFIRM=0
 REINSTALL=0
 
-# Resolver output (populated by resolve_spec):
+# Resolver output:
 R_KIND=""      # release | nightly | pr
 R_LABEL=""     # short symlink id, e.g. 1.12.6 / nightly / 1.11-nightly / pr1234
 R_URL=""       # tarball download URL
-R_ASC_URL=""   # detached signature URL ("" if none)
 R_ROLLUP=0     # 1 if this is a plain stable release eligible for X.Y / X rollups
 
 # Detected/overridden architecture (see arch_setup):
@@ -142,11 +141,6 @@ http_get() { curl -fsSL --retry 3 --max-filesize 100M "$1"; }
 # http_download URL DEST. --max-filesize caps it; 3G >> any build.
 http_download() { curl -fL --retry 3 --progress-bar --max-filesize 3G -o "$2" "$1"; }
 
-# http_ok URL -> 0 if a HEAD request returns success
-http_ok() {
-	curl -fsIL -o /dev/null "$1" 2>/dev/null
-}
-
 # Compare versions in semver precedence order, in-shell, so picking the greatest
 # needs no `sort -V` (a GNU extension) - no sort at all.
 
@@ -175,6 +169,22 @@ is_alphanumdashdot() {
 	esac
 }
 
+# allowed characters for script version spec
+# MUST NOT include path separators
+is_versionspecchars() {
+	case "$1" in
+		*[!0-9A-Za-z.~_+-]*) return 1 ;;     # any char outside the set
+		*) return 0 ;;
+	esac
+}
+
+is_digits() {
+	case "$1" in
+		*[!0-9]*) return 1 ;;     # any char outside the set
+		*) return 0 ;;
+	esac
+}
+
 is_numsegment() {
 	case "$1" in
 		'') return 1 ;; # reject empty
@@ -196,7 +206,7 @@ is_prereleasesegment() {
 	esac
 }
 
-# check if valid semver build metadata suffix is currently not supported
+# check if valid semver. Build metadata suffix is currently not supported
 is_version() {
 	is_alphanumdashdot "$1" || return 1
 	case "$1" in
@@ -231,6 +241,13 @@ is_version() {
 	return 0
 }
 
+# check if there is a '-'
+has_dash() {
+	case "$1" in
+		*-*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
 
 # version_gt A B: return 0 iff version A is strictly greater than B.
 # Die if A or B are not valid semver versions or contain a build metadata suffix.
@@ -284,7 +301,7 @@ version_gt() {
 
 # Read versions on stdin, print the greatest. Empty input prints an empty line
 # and returns 0 - callers guard with [ -n "$result" ] - so a no-match never
-# aborts under set -e. A plain fold, no sort.
+# aborts under set -e.
 version_max() {
 	version_max_best=''
 	while IFS= read -r version_max_v; do
@@ -300,7 +317,7 @@ version_max() {
 # Architecture                                                                #
 # --------------------------------------------------------------------------- #
 
-# arch_setup [override]; resolve an arch alias straight to its bucket names. The
+# arch_setup override; resolve an arch alias straight to its bucket names. The
 # stable bucket dir (x64/x86) differs from ARCH_FILE - the filename arch, which is
 # also the nightlies-bucket dir (x86_64/i686) - so each known arch sets both. An
 # UNRECOGNIZED arch is passed through verbatim for both: we can't predict the aliases
@@ -308,13 +325,12 @@ version_max() {
 # 404 if that guess is wrong, rather than rejecting a newly-shipped arch outright
 # (it then works automatically, or via ~arch, with no script update).
 arch_setup() {
-	_a=${1:-}
-	[ -z "$_a" ] && _a=$(uname -m)
-	case "$_a" in
-		x86_64 | x64) ARCH_STABLE=x64;     ARCH_FILE=x86_64 ;;
-		i686 | x86)   ARCH_STABLE=x86;     ARCH_FILE=i686 ;;
-		aarch64)      ARCH_STABLE=aarch64; ARCH_FILE=aarch64 ;;
-		*)            ARCH_STABLE=$_a;     ARCH_FILE=$_a ;;   # unrecognized: pass through
+	_arch_uname=${1:-$(uname -m)}
+	case "$_arch_uname" in
+		x86_64 | x64) ARCH_STABLE=x64;           ARCH_FILE=x86_64 ;;
+		i686 | x86)   ARCH_STABLE=x86;           ARCH_FILE=i686 ;;
+		aarch64)      ARCH_STABLE=aarch64;       ARCH_FILE=aarch64 ;;
+		*)            ARCH_STABLE=$_arch_uname;  ARCH_FILE=$_arch_uname ;;
 	esac
 }
 
@@ -325,14 +341,12 @@ arch_setup() {
 # Escape regex metacharacters (dots) in a version prefix.
 reesc() { printf '%s' "$1" | sed 's/\./\\./g'; }
 
-# stable_versions -> every full version with a Linux build for this arch, one per
+# stable_versions include_prereleases -> every full version with a Linux build for this arch, one per
 # line (e.g. 1.12.6 / 1.13.0-rc1). Read from the published release manifest at
-# <STABLE_BASE>/bin/versions.json rather than an S3 bucket listing: the manifest is
-# an ordinary file, so a dumb HTTP mirror (one with no S3 ListObjects API) serves it
-# too. We don't parse the JSON - we just pull the tarball filenames out of it; each
+# <STABLE_BASE>/bin/versions.json
+# We don't parse the JSON - we just pull the tarball filenames out of it; each
 # embeds its exact version, which inherently keeps only builds that exist for
-# ARCH_FILE and skips the rolling "<minor>-latest" pointers (the manifest lists
-# concrete releases only). Captured before parsing (see http_get) so a network error
+# ARCH_FILE. Captured before parsing (see http_get) so a network error
 # aborts instead of masquerading as "no such version".
 stable_versions() {
 	_json=$(http_get "$STABLE_BASE/bin/versions.json") ||
@@ -351,27 +365,29 @@ stable_versions() {
 		sort -u |
 		while IFS= read -r _sv; do
 			if is_version "$_sv"; then
-				printf '%s\n' "$_sv"
+				if [ "$1" = 1 ]; then
+					printf '%s\n' "$_sv"
+				elif ! has_dash "$_sv"; then
+					printf '%s\n' "$_sv"
+				fi
 			else
 				warn "ignoring unparseable version '$_sv' in versions.json"
 			fi
 		done
 }
 
-# pick_stable PREFIX STABLE_ONLY -> greatest matching full version ("" if none).
+# pick_latest PREFIX INCLUDE_PRERELEASES -> greatest matching full version ("" if none).
 #   PREFIX: "" (any) | major (1) | major.minor (1.12)
 #   STABLE_ONLY=1 excludes prereleases (rc/beta/alpha).
-pick_stable() {
-	_prefix=$1 _stable_only=$2
+pick_latest() {
+	_prefix=$1
 	# Assigned on its own line (see http_get) so stable_versions' die isn't swallowed.
-	_cands=$(stable_versions)
+	_cands=$(stable_versions "$2")
 	[ -n "$_prefix" ] &&
 		_cands=$(printf '%s\n' "$_cands" | grep -E "^$(reesc "$_prefix")(\.|$)" || true)
-	[ "$_stable_only" = 1 ] &&
-		_cands=$(printf '%s\n' "$_cands" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
 	# version_max returns success with empty output for empty input, so the
 	# no-match case doesn't return a nonzero status that, under set -e, would abort
-	# the `_full=$(pick_stable ...)` assignment before the caller's own
+	# the `_full=$(pick_latest ...)` assignment before the caller's own
 	# `[ -n "$_full" ]` guard could emit a helpful message.
 	printf '%s\n' "$_cands" | grep -v '^$' | version_max
 }
@@ -383,121 +399,19 @@ pick_stable() {
 # Build the stable download URL for a known full version (e.g. 1.12.6).
 resolve_stable_full() {
 	_full=$1
-	[ -n "$_full" ] || die "no matching stable release for $ARCH_FILE"
-	_minor=$(printf '%s' "$_full" | sed -n 's/^\([0-9]*\.[0-9]*\).*/\1/p')
+	[ -n "$_full" ] || die "no stable release matching '$_spec' for $ARCH_FILE"
+	is_version "$_full" || die "$_full is not a valid version"
+	_full_core=${_full%%-*}
+	_minor=${_full_core%.*}
 	R_KIND=release
 	R_URL="$STABLE_BASE/bin/linux/$ARCH_STABLE/$_minor/julia-$_full-linux-$ARCH_FILE.tar.gz"
-	R_ASC_URL="$R_URL.asc"
 	# Plain X.Y.Z (no prerelease tag) participates in rollup symlinks.
-	case "$_full" in *-*) R_ROLLUP=0 ;; *) R_ROLLUP=1 ;; esac
-	R_LABEL="$_full"
-}
-
-resolve_nightly() {
-	# resolve_nightly [minor]   ("" => master)
-	_minor=${1:-}
-	R_KIND=nightly
-	if [ -n "$_minor" ]; then
-		R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/$_minor/julia-latest-linux-$ARCH_FILE.tar.gz"
-		R_LABEL="$_minor-nightly"
-	else
-		R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-latest-linux-$ARCH_FILE.tar.gz"
-		R_LABEL="nightly"
-	fi
-	R_ASC_URL="$R_URL.asc"
-	R_ROLLUP=0
-}
-
-resolve_pr() {
-	# Julia's CI uploads some PR's latest build to a fixed, PR-numbered key
-	# in the nightlies bucket.
-	_num=$1
-	R_KIND='pr'
-	R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-pr$_num-linux-$ARCH_FILE.tar.gz"
-	http_ok "$R_URL" || die \
-		"no build published for PR #$_num on $ARCH_FILE (the PR may be closed, or CI hasn't uploaded a build yet)"
-	R_ASC_URL="$R_URL.asc"
-	R_ROLLUP=0
-	R_LABEL="pr$_num"
-}
-
-# resolve_spec SPEC: parse a version specifier and populate R_* globals.
-resolve_spec() {
-	_spec=$1
-	R_KIND=""; R_LABEL=""; R_URL=""; R_ASC_URL=""; R_ROLLUP=0
-
-	# Reject any path-shaped spec outright: case globs match '/', so a spec like
-	# "1.2.3/../evil" would otherwise fall into the version patterns below and
-	# end up in install-dir names, where the slash escapes INSTALL_DIR.
-	case "$_spec" in */*) die "bad version specifier: $_spec" ;; esac
-
-	# Split off an architecture override: "1.10~aarch64". An explicit ~arch tags the
-	# label with what the user typed (~x86, not the canonical ~i686) and opts the
-	# build out of the X.Y / X rollups (below); a bare spec autodetects via uname and
-	# keeps the bare, rollup-eligible name. So the tag is exactly "was ~arch given".
-	#
-	# We download by the resolved bucket arch (arch_setup) but label by the literal
-	# spelling, so aliases of one arch (~x86/~i686, ~x64/~x86_64) name distinct install
-	# dirs - redundant copies of the same binary, which is fine. The rollup opt-out
-	# itself happens once R_LABEL is set, below.
-	case "$_spec" in
-		*"~"*)
-			# Everything after the LEFTMOST ~ is the arch token (a version never
-			# contains ~), so a stray second ~ ("1.0.0~x86~x64") lands inside the
-			# token and is rejected below instead of being silently dropped.
-			_arch=${_spec#*~}
-			# Require a non-empty bare token: it's interpolated into the sed
-			# expressions and download URL (a metacharacter could break out of
-			# them) and becomes part of the install-dir name. Unknown-but-well-
-			# formed arches still pass through.
-			case "$_arch" in "" | *[!A-Za-z0-9_-]*)
-				die "bad arch override in '$_spec' (arch must be one or more of A-Za-z0-9_-)" ;;
-			esac
-			ARCH_SUFFIX="~$_arch"; arch_setup "$_arch"; _spec=${_spec%%~*} ;;
-		*)     ARCH_SUFFIX=""; arch_setup ;;
-	esac
-
-	case "$_spec" in
-		nightly | latest-nightly)
-			resolve_nightly "" ;;
-		*-nightly)
-			_m=${_spec%-nightly}
-			case "$_m" in [0-9]*.[0-9]*) resolve_nightly "$_m" ;; *) die "bad nightly spec: $_spec" ;; esac ;;
-		pr[0-9]*)
-			# Require the whole tail to be digits (the glob only pins the first), so
-			# a malformed "pr12ab" is rejected up front rather than 404ing mid-resolve.
-			_n=${_spec#pr}
-			case "$_n" in *[!0-9]*) die "bad pr spec: $_spec (expected pr<number>)" ;; esac
-			resolve_pr "$_n" ;;
-		"")
-			# No specifier: latest stable release across all majors. Assigned before
-			# the call, not inlined as an arg (see http_get), so a network error in
-			# pick_stable aborts instead of becoming a misleading "no matching release".
-			_full=$(pick_stable "" 1); resolve_stable_full "$_full" ;;
-		pre | preview | rc)
-			# Greatest version overall, prereleases included.
-			_full=$(pick_stable "" 0); resolve_stable_full "$_full" ;;
-		[0-9]*.[0-9]*.[0-9]*-*)
-			# Fully-qualified prerelease, e.g. 1.13.0-rc1.
-			resolve_stable_full "$_spec" ;;
-		[0-9]*.[0-9]*.[0-9]*)
-			resolve_stable_full "$_spec" ;;
-		[0-9]* | [0-9]*.[0-9]*)
-			_full=$(pick_stable "$_spec" 1)
-			[ -n "$_full" ] || die "no stable release matching '$_spec' for $ARCH_FILE"
-			resolve_stable_full "$_full" ;;
-		*)
-			die "unrecognized version specifier: $_spec" ;;
-	esac
-
-	# Apply the ~arch tag and keep the build out of the X.Y / X rollups: those links
-	# track the builds you install for this machine (no ~arch), so an arch-pinned one
-	# must never hijack them. Its own direct link (julia-<label>~<arch>) is enough.
-	if [ -n "$ARCH_SUFFIX" ]; then
-		R_LABEL="$R_LABEL$ARCH_SUFFIX"
+	if has_dash "$_full" ; then
 		R_ROLLUP=0
+	else
+		R_ROLLUP=1
 	fi
-	[ -n "$R_URL" ] || die "could not resolve a download URL for '$1'"
+	R_LABEL="$_full"
 }
 
 # --------------------------------------------------------------------------- #
@@ -517,18 +431,14 @@ verify_sig() {
 		warn "PR builds are not signed; skipping signature verification"
 		return 0
 	fi
-	[ -n "$R_ASC_URL" ] || die "no signature URL for $R_LABEL (refusing to install unverified)"
 
 	_asc="$_file.asc"
-	http_get "$R_ASC_URL" >"$_asc" ||
-		die "could not download signature from $R_ASC_URL (refusing to install unverified)"
+	http_get "$R_URL.asc" >"$_asc" ||
+		die "could not download signature from $R_URL.asc (refusing to install unverified)"
 
 	_keyring="$_file.keyring"
 	julia_keyring >"$_keyring" || die "could not materialize signing keyring"
 
-	# The keyring holds only the official Julia key and gpgv trusts every key it
-	# is given, so a zero exit status means "validly signed by Julia's key" - the
-	# key identity is bound by the keyring contents, no separate fpr check needed.
 	gpgv --keyring "$_keyring" "$_asc" "$_file" >/dev/null ||
 		die "signature verification FAILED for $(basename "$_file") - refusing to install"
 }
@@ -552,6 +462,8 @@ install_resolved() {
 	_destname=$1
 	_dest="$INSTALL_DIR/$_destname"
 	_ns="$INSTALL_DIR/.incoming.$_destname"
+
+	mkdir -p "$INSTALL_DIR" || die "could not create $INSTALL_DIR"
 
 	# Reap leftovers before staging. First sweep the inert .old.* garbage (any
 	# version - always safe) to free disk, then yank this version's whole staging
@@ -582,10 +494,9 @@ install_resolved() {
 	tar -xzf "$_tar" --strip-components=1 -C "$_tree" || die "failed to extract tarball"
 	[ -x "$_tree/bin/julia" ] || die "unexpected tarball layout (no bin/julia)"
 
-	# Version read from the tarball's own top-level dir name (Julia names it after the
-	# version) - never by running the binary. Used for display, and below to bind a
-	# release tarball to the version we asked for. Some tar writers list the dir
-	# entry without a trailing slash, so the slash is not part of the match.
+	# Version read from the tarball's own top-level dir name
+	# Used for display, and below to bind a
+	# release tarball to the version we asked for.
 	_realver=$(tar -tzf "$_tar" 2>/dev/null | sed -n '1s#^julia-\([^/]*\).*#\1#p')
 
 	# Version-binding: GPG proves the tarball is a genuine Julia build but not *which*
@@ -601,26 +512,7 @@ install_resolved() {
 	fi
 	[ -n "$_realver" ] || _realver=$R_LABEL
 
-	# Swap the unpacked tree into place. The tree is named <destname> and moved to
-	# INSTALL_DIR itself, so mv computes the final path as the target and rename(2)
-	# either lands it there atomically or fails outright (ENOTEMPTY) if the version
-	# appeared concurrently - the POSIX-portable equivalent of mv -T, with no way
-	# to nest or merge. Two cases:
-	#
-	#   * First install (no DEST yet): a single rename(2). No window.
-	#
-	#   * Refresh (DEST exists): rename(2) can't overwrite a non-empty dir, so park the
-	#     old version in a fresh .old.* scratch dir first, then rename the new one in.
-	#     DEST is absent for the single syscall between the two renames, so a
-	#     concurrent `julia` can momentarily get ENOENT. We don't bother closing that
-	#     window with an atomic `mv --exchange`: a refresh only happens on --reinstall
-	#     or a rolling nightly/pr update (an already-present stable version skips the
-	#     download entirely), so casual users never reach this path and anyone who
-	#     does can just re-run. If power is lost between the two renames the version
-	#     is left missing, and the parked .old is reaped on the next install.
-	# -f on the claims so a stray unwritable file at the destination fails
-	# outright instead of making mv prompt; collisions still fail (rename(2)
-	# never overwrites a non-empty directory).
+	# Swap the unpacked tree into place.
 	if [ ! -d "$_dest" ]; then
 		mv -f "$_tree" "$INSTALL_DIR/" || die "could not install into $_dest"
 	else
@@ -684,85 +576,117 @@ raise_rollup() {
 	done
 }
 
-# Create the direct + rollup symlinks for an installed build.
-make_symlinks() {
-	_destname=$1            # install dir name, e.g. julia-1.12.6 / julia-nightly
-	_label=$2              # short id for the direct symlink (1.12.6 / nightly / pr1234)
-	link "julia-$_label" "$INSTALL_DIR/$_destname/bin/julia"
-	if [ "$R_ROLLUP" = 1 ]; then
-		_xy=$(printf '%s' "$_label" | sed 's/\.[0-9]*$//')   # 1.12.6 -> 1.12
-		_x=$(printf '%s' "$_label" | sed 's/\..*//')          # 1.12.6 -> 1
-		raise_rollup "julia-$_xy" "$_label"
-		raise_rollup "julia-$_x" "$_label"
-	fi
-	return 0
-}
-
 set_default() { link "julia" "$1"; }
 
 # --------------------------------------------------------------------------- #
 # Commands                                                                    #
 # --------------------------------------------------------------------------- #
 
-# Resolve an installed version from a partial id; echo its install dir name.
-# Used by `switch`, which targets a single build: an exact id wins, else the
-# *greatest* installed stable patch matching a numeric prefix.
-find_installed() {
-	_q=$1
-	# exact match first
-	[ -d "$INSTALL_DIR/julia-$_q" ] && { printf 'julia-%s\n' "$_q"; return 0; }
-	# else greatest installed stable matching the prefix
-	_v=$(ls "$INSTALL_DIR" 2>/dev/null |
-		sed -n 's/^julia-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' |
-		grep -E "^$(printf '%s' "$_q" | sed 's/\./\\./g')(\.|$)" | version_max)
-	[ -n "$_v" ] && { printf 'julia-%s\n' "$_v"; return 0; }
-	return 1
-}
-
-# List *every* installed build matching a removal query, one "julia-<id>" per line,
-# ascending. A pure-numeric prefix (1, 1.12, 1.12.6) sweeps every build under it --
+# List *every* installed build matching a removal query, one "julia-<id>" per line.
+# A pure-numeric prefix (1, 1.12, 1.12.6) sweeps every build under it --
 # releases, prereleases, the branch nightly, and ALL arches - so `remove 1.12`
 # clears the whole 1.12 line (1.12.x, 1.12.x-rcN, 1.12-nightly, and any ~arch copy).
 # Matching is on component boundaries, so `1.1` never catches `1.10.0`. The master
 # nightly and pr builds carry no numeric prefix, so they (and any fully-
 # qualified id) are matched only by exact name. Nonzero if nothing matches.
 match_installed() {
-	_q=$1
-	case "$_q" in
+	case "$1" in
 		*[!0-9.]*) ;;   # not pure-numeric -> exact match only (handled below)
 		*)
 			# Pure-numeric prefix: sweep every build whose version starts with it
-			# at a component boundary ('.' or '-'), with any ~arch tag stripped first.
-			# Sort the bare ids (POSIX numeric sort, by dotted field; the julia-
-			# prefix would defeat -k1,1n) and re-add the prefix afterward.
-			_hits=$(ls "$INSTALL_DIR" 2>/dev/null | sed -n 's/^julia-//p' |
+			# at a component boundary ('.', '~', or '-').
+			_hits=$(ls "$INSTALL_DIR" 2>/dev/null |
 				while IFS= read -r _id; do
-					case "${_id%%~*}" in
-						"$_q" | "$_q".* | "$_q"-*) printf '%s\n' "$_id" ;;
+					case "${_id}" in
+						# some problematic characters are filtered
+						*[!0-9A-Za-z.~_+-]*) : ;;
+						"julia-${1}" | "julia-${1}"[.~-]*) printf '%s\n' "$_id" ;;
 					esac
-				done | sort -t. -k1,1n -k2,2n -k3,3n | sed 's/^/julia-/')
+				done)
 			[ -n "$_hits" ] && { printf '%s\n' "$_hits"; return 0; } ;;
 	esac
 	# Exact id: a fully-qualified prerelease/~arch name, a rolling build, or a
 	# numeric token with no swept match above.
-	[ -d "$INSTALL_DIR/julia-$_q" ] && { printf 'julia-%s\n' "$_q"; return 0; }
+	[ -d "$INSTALL_DIR/julia-$1" ] && { printf 'julia-%s\n' "$1"; return 0; }
 	return 1
 }
 
 cmd_install() {
-	# cmd_install SPEC SETDEFAULT. The spec is read from $1 both times, never
-	# copied into a named variable: shell variables are global, and resolve_spec
-	# strips ~arch from its own _spec - which would alias a copy here and make
-	# the message below misquote what the user typed.
+	# cmd_install SPEC SETDEFAULT.
 	_setdefault=$2
-	resolve_spec "$1"
+	## Resolve spec parse a version specifier and populate R_* globals.
+	_spec=$1
+	R_KIND=""; R_LABEL=""; R_URL=""; R_ROLLUP=0
+
+	# Reject any bad characters or path-shaped spec outright: case globs match '/', so a spec like
+	# "1.2.3/../evil" would otherwise fall into the version patterns below and
+	# end up in install-dir names, where the slash escapes INSTALL_DIR.
+	is_versionspecchars "$_spec" || die "bad version specifier: $_spec"
+
+	# Split off an architecture override: "1.10~aarch64". An explicit ~arch tags the
+	# label with what the user typed (~x86, not the canonical ~i686) and opts the
+	# build out of the X.Y / X rollups (below); a bare spec autodetects via uname and
+	# keeps the bare, rollup-eligible name.
+	case "$_spec" in
+		*"~"*)
+			# Everything after the LEFTMOST ~ is the arch token
+			_arch=${_spec#*~}
+			# Require a non-empty bare token: it's interpolated into the sed
+			# expressions and download URL (a metacharacter could break out of
+			# them) and becomes part of the install-dir name. Unknown-but-well-
+			# formed arches still pass through.
+			case "$_arch" in "" | *[!A-Za-z0-9_-]*)
+				die "bad arch override in '$_spec' (arch must be one or more of A-Za-z0-9_-)" ;;
+			esac
+			ARCH_SUFFIX="~$_arch"; arch_setup "$_arch"; _spec=${_spec%%~*} ;;
+		*)     ARCH_SUFFIX=""; arch_setup "";;
+	esac
+
+	case "$_spec" in
+		nightly)
+			R_KIND=nightly
+			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-latest-linux-$ARCH_FILE.tar.gz"
+			R_LABEL="$_spec"
+			R_ROLLUP=0 ;;
+		[0-9]*.[0-9]*-nightly)
+			_nightly_minor=${_spec%-nightly}
+			R_KIND=nightly
+			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/$_nightly_minor/julia-latest-linux-$ARCH_FILE.tar.gz"
+			R_LABEL="$_spec"
+			R_ROLLUP=0 ;;
+		pr[0-9]*)
+			# Require the whole tail to be digits (the glob only pins the first)
+			is_digits ${_spec#pr} || die "bad pr spec: $_spec (expected pr<number>)"
+			R_KIND='pr'
+			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-$_spec-linux-$ARCH_FILE.tar.gz"
+			R_LABEL="$_spec"
+			R_ROLLUP=0 ;;
+		[0-9]*.[0-9]*.[0-9]*)
+			resolve_stable_full "$_spec" ;;
+		pre)
+			# Greatest version overall, prereleases included.
+			_full=$(pick_latest "" 1); resolve_stable_full "$_full" ;;
+		"" | [0-9]* | [0-9]*.[0-9]*)
+			_full=$(pick_latest "$_spec" 0)
+			resolve_stable_full "$_full" ;;
+		*)
+			die "unrecognized version specifier: $_spec" ;;
+	esac
+	# Apply the ~arch tag and keep the build out of the X.Y / X rollups: those links
+	# track the builds you install for this machine (no ~arch), so an arch-pinned one
+	# must never hijack them. Its own direct link (julia-<label>~<arch>) is enough.
+	if [ -n "$ARCH_SUFFIX" ]; then
+		R_LABEL="$R_LABEL$ARCH_SUFFIX"
+		R_ROLLUP=0
+	fi
+	[ -n "$R_URL" ] || die "could not resolve a download URL for '$1'"
+
 	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
-	mkdir -p "$INSTALL_DIR"
 	_destname="julia-$R_LABEL"
 	# A stable release is immutable, so once its dir exists the resolved label is that
 	# same build and there is nothing to download. Default to skipping the reinstall:
-	# no pointless re-download, and no non-atomic refresh of a live version on systems
-	# without an atomic directory swap. We still re-link it (and switch the default),
+	# no pointless re-download, and no non-atomic refresh of a live version.
+	# We still re-link it (and switch the default),
 	# so the prompt spells that out and points at --reinstall to force a fresh build.
 	# --reinstall, and rolling nightly/pr builds (which refresh to the newest build
 	# behind their label - the whole point of re-running them), take the full
@@ -785,16 +709,26 @@ cmd_install() {
 				_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
 			fi
 		fi
-		# Make the trust downgrade part of what the user consents to: PR builds
-		# skip GPG verification (see verify_sig), not just a warning that scrolls by.
-		[ "$R_KIND" = pr ] && _prompt="$_prompt (unsigned: PR builds have no GPG signature)"
+		[ "$R_KIND" = pr ] && _prompt="$_prompt (PR builds are unsigned)"
 		if ! confirm "$_prompt"; then
 			info "Aborted."; exit 0
 		fi
 
 		install_resolved "$_destname"
 	fi
-	make_symlinks "$_destname" "$R_LABEL"
+
+	# Create the direct + rollup symlinks for an installed build.
+	link "$_destname" "$INSTALL_DIR/$_destname/bin/julia"
+	if [ "$R_ROLLUP" = 1 ]; then
+		# assert R_LABEL is a core version
+		has_dash "$R_LABEL" && die "unreachable"
+		is_version "$R_LABEL" || die "unreachable"
+		_xy=${R_LABEL%.*} # 1.12.6 -> 1.12
+		_x=${_xy%.*} # 1.12.6 -> 1
+		raise_rollup "julia-$_xy" "$R_LABEL"
+		raise_rollup "julia-$_x" "$R_LABEL"
+	fi
+
 	if [ "$_setdefault" = 1 ]; then
 		set_default "$INSTALL_DIR/$_destname/bin/julia"
 		info "Default 'julia' now points to $R_LABEL"
@@ -815,8 +749,19 @@ cmd_switch() {
 			info "Default 'julia' now points to $_abs"
 			return 0 ;;
 	esac
-	_destname=$(find_installed "$_target") ||
-		die "no installed version matching '$_target' (switch never installs; try: install-julia.sh add $_target)"
+	# Resolve an installed version from a partial id;
+	if [ -d "$INSTALL_DIR/julia-$_target" ]; then
+		# exact match first
+		_destname="julia-$_target"
+	else
+		# else greatest installed stable matching the prefix
+		_found_label=$(ls "$INSTALL_DIR" 2>/dev/null |
+			sed -n 's/^julia-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' |
+			grep -E "^$(reesc "$_target")(\.|$)" | version_max)
+		[ -n "$_found_label" ] ||
+			die "no installed version matching '$_target' (switch never installs; try: install-julia.sh add $_target)"
+		_destname="julia-$_found_label"
+	fi
 	set_default "$INSTALL_DIR/$_destname/bin/julia"
 	info "Default 'julia' now points to ${_destname#julia-}"
 }
@@ -825,36 +770,42 @@ cmd_switch() {
 remove_one() {
 	_destname=$1
 	_dest="$INSTALL_DIR/$_destname"
+	_ns="$INSTALL_DIR/.incoming.$_destname"
 
-	# Reverse of install: drop the referring symlinks *before* the directory, so
-	# nothing ever resolves through a link into a half-deleted tree. We do not
+	# Reverse of install: drop the referring symlinks *before* the directory. We do not
 	# repoint rollups to an older remaining patch - removing a version simply drops
-	# its links (a missing link is trivially repaired by the next install; a
-	# dangling one is not). Direct, rollup, and default links are all handled here.
+	# its links.
 	if [ -d "$SYMLINK_DIR" ]; then
 		for _l in "$SYMLINK_DIR"/julia "$SYMLINK_DIR"/julia-*; do
 			[ -L "$_l" ] || continue
 			case "$(readlink "$_l")" in "$_dest"/*) rm -f "$_l"; info "removed symlink $(basename "$_l")" ;; esac
 		done
 	fi
-	rm -rf "$_dest"
-	# Mop up this version's staging namespace the same way install reaps it: yank
-	# .incoming.<destname> aside with one rename (so nothing is ever half-deleted
-	# at an installable path), then sweep all inert .old.* garbage.
-	_scratch=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
-		die "could not create scratch dir in $INSTALL_DIR"
-	mv "$INSTALL_DIR/.incoming.$_destname" "$_scratch/" 2>/dev/null || :
+	info "Removing $_destname"
+	_old=""
+	if [ -e "$_dest" ] || [ -L "$_dest" ]; then
+		_old=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
+			die "could not create scratch dir in $INSTALL_DIR"
+		mv -f "$_dest" "$_old/" || die "could not remove $_destname"
+	fi
+	if [ -e "$_ns" ] || [ -L "$_ns" ]; then
+		if [ -z "$_old" ]; then
+			_old=$(mktemp -d "$INSTALL_DIR/.old.XXXXXXXXXX") ||
+				die "could not create scratch dir in $INSTALL_DIR"
+		fi
+		mv -f "$_ns" "$_old/" 2>/dev/null || :
+	fi
 	rm -rf "$INSTALL_DIR"/.old.* 2>/dev/null || :
 	info "Removed $_destname"
 }
 
 cmd_remove() {
 	_target=$1
-	# Reject any path-shaped target outright (as resolve_spec does for installs):
+	# Reject any path-shaped target outright:
 	# match_installed resolves an exact id with a bare [ -d "$INSTALL_DIR/julia-$_q" ]
-	# test, so a "../.." target would escape INSTALL_DIR and remove_one's rm -rf
-	# would delete a tree outside it.
-	case "$_target" in */*) die "bad version specifier: $_target" ;; esac
+	# test, so a "../.." target would escape INSTALL_DIR and remove_one would
+	# move aside and delete a tree outside it.
+	is_versionspecchars "$_target" || die "bad version specifier: $_target"
 	# A bare numeric prefix expands to every build under it (releases, prereleases,
 	# the branch nightly, all arches); a non-numeric id (master nightly / pr... /
 	# fully-qualified prerelease or ~arch) matches just itself. See match_installed.
@@ -871,16 +822,18 @@ cmd_remove() {
 		confirm "Remove $INSTALL_DIR/$_matches and its symlinks?" || { info "Aborted."; exit 0; }
 	fi
 
+	# cleanup old to make space for shifting things out
+	rm -rf "$INSTALL_DIR"/.old.* 2>/dev/null || :
 	# Version ids carry no spaces or glob metacharacters, so word-splitting the list
-	# is safe; staying out of a subshell keeps `die` fatal to
-	# the whole batch rather than just one iteration.
+	# is safe
 	for _destname in $_matches; do
 		remove_one "$_destname"
 	done
 }
 
 cmd_list() {
-	if [ ! -d "$INSTALL_DIR" ]; then echo "No versions installed."; return 0; fi
+	# A missing INSTALL_DIR (ls errors to /dev/null -> empty) and an empty one
+	# both print nothing: the output is exactly the installed versions, no more.
 	_default=""
 	[ -L "$SYMLINK_DIR/julia" ] && _default=$(readlink "$SYMLINK_DIR/julia")
 	ls "$INSTALL_DIR" 2>/dev/null | sed -n 's/^julia-//p' | sort -t. -k1,1n -k2,2n -k3,3n | while read -r _v; do

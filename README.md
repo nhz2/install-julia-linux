@@ -7,8 +7,6 @@ binaries, verifies them with a bundled GPG key, unpacks them
 and keeps a tidy set of `julia`, `julia-X`, `julia-X.Y`, `julia-X.Y.Z`
 symlinks on your `PATH`.
 
-Vibe coded with claude code.
-
 Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
 
 ## Install
@@ -174,6 +172,11 @@ install-julia.sh switch ~/build/julia/usr/bin/julia   # point julia at a custom 
 install-julia.sh remove 1.10           # delete all 1.10.*
 install-julia.sh list                  # show what's installed
 ```
+
+## AI usage
+
+This project was developed with the help of AI tools (Claude Code). All code
+has been manually reviewed.
 
 ## License
 
