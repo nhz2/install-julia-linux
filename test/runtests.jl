@@ -491,7 +491,7 @@ end
     end
     r = run_script_y("add", "1.0.1"; env=("INSTALL_JULIA_STABLE_URL" => "file://$subst",))
     @test r.code == 1
-    @test occursin("GPG signature OK", r.err)   # the attack defeats GPG...
+    @test occursin("Good signature from", r.err)   # the attack defeats GPG...
     @test occursin("version mismatch: requested 1.0.1 but tarball reports '1.0.0'", r.err)
     @test !isdir(joinpath(installdir, "julia-1.0.1"))
 

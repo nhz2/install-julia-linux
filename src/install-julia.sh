@@ -29,10 +29,8 @@ STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"https://julialang-s3.julialang.org"}
 NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.julialang.org"}
 STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
 
-# Pinned for display only; the trusted key itself is embedded (see julia_keyring).
-GPG_FPR="3673DF529D9049477F76B37566E3C7DC03D6E495"
-
 # The official Julia binary signing key, dearmored to a binary keyring for gpgv.
+# Fingerprint: 3673DF529D9049477F76B37566E3C7DC03D6E495
 # Source : https://julialang.org/assets/juliareleases.asc
 # Date   : 2026-06-08
 # Key    : Julia (Binary signing key) <buildbot@julialang.org>
@@ -531,11 +529,8 @@ verify_sig() {
 	# The keyring holds only the official Julia key and gpgv trusts every key it
 	# is given, so a zero exit status means "validly signed by Julia's key" - the
 	# key identity is bound by the keyring contents, no separate fpr check needed.
-	if gpgv --keyring "$_keyring" "$_asc" "$_file" >/dev/null 2>&1; then
-		info "GPG signature OK ($GPG_FPR)"
-	else
+	gpgv --keyring "$_keyring" "$_asc" "$_file" >/dev/null ||
 		die "signature verification FAILED for $(basename "$_file") - refusing to install"
-	fi
 }
 
 # install_resolved DESTNAME: download R_URL, verify it, and claim
@@ -790,6 +785,9 @@ cmd_install() {
 				_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
 			fi
 		fi
+		# Make the trust downgrade part of what the user consents to: PR builds
+		# skip GPG verification (see verify_sig), not just a warning that scrolls by.
+		[ "$R_KIND" = pr ] && _prompt="$_prompt (unsigned: PR builds have no GPG signature)"
 		if ! confirm "$_prompt"; then
 			info "Aborted."; exit 0
 		fi
