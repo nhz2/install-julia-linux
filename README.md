@@ -3,7 +3,7 @@
 A POSIX shell script that installs and manages
 [Julia](https://julialang.org) on Linux. It is an alternative to [`jill.py`](https://github.com/johnnychen94/jill.py)
 or [`juliaup`](https://github.com/JuliaLang/juliaup): it downloads official Julia
-binaries, verifies them with a bundled GPG key, unpacks them 
+binaries, verifies them with a bundled GPG key, unpacks them,
 and keeps a tidy set of `julia`, `julia-X`, `julia-X.Y`, `julia-X.Y.Z`
 symlinks on your `PATH`.
 
@@ -37,9 +37,9 @@ install-julia.sh [options] [command] [version]
 | `install-julia.sh`                   | Install the latest stable release and point the default `julia` at it.       |
 | `install-julia.sh <version>`         | Install `<version>` and make it the default `julia`.                         |
 | `install-julia.sh add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
-| `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the **greatest installed stable patch** under it — never a prerelease, nightly, or `~arch` copy; those need their exact id (`1.13.0-rc1`, `1.12-nightly`, `1.12.6~x86`). **Installs nothing.** |
-| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes **all** matching builds — releases, prereleases, the branch nightly, and every per-arch copy — so `remove 1.12` clears the whole 1.12 line, while `remove 1.1` never touches `1.10.x`. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. One confirmation for the batch. Alias: `rm`. |
-| `install-julia.sh list`              | List installed versions (the default is marked with `*`). Alias: `ls`.       |
+| `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
+| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies). A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. Alias: `rm`. |
+| `install-julia.sh list`              | List installed versions. Alias: `ls`.                                        |
 
 ### Options
 
@@ -58,10 +58,10 @@ install-julia.sh [options] [command] [version]
 | `1.12`           | Latest stable `1.12.x`.                                            |
 | `1.12.6`         | Exactly `1.12.6`.                                                  |
 | `1.13.0-rc1`     | A specific prerelease (release candidate, beta, …).               |
-| `pre`            | Latest release **including** release candidates / betas.          |
+| `pre`            | Latest release, including release candidates and betas.           |
 | `nightly`        | Latest `master` nightly build.                                    |
 | `1.11-nightly`   | Latest nightly of the `1.11` branch.                              |
-| `pr1234`         | The latest CI build of pull request 1234 (see below).            |
+| `pr1234`         | The latest CI build of pull request 1234.                         |
 
 ### Architecture override
 
@@ -82,40 +82,31 @@ label:
 
 ```
 ~/packages/julias/
-  julia-1.11.5/
   julia-1.12.6/
-  julia-1.12.6~aarch64/   # a non-native build, namespaced by arch (see below)
+  julia-1.12.6~x86/   # a non-native build, namespaced by arch (see below)
   julia-nightly/
-  julia-pr1234/
 ```
 
 Symlinks are created in `INSTALL_JULIA_SYMLINK_DIR` (default `~/.local/bin`):
 
 ```
 julia            -> .../julia-1.12.6/bin/julia      # the default; set by install / switch
-julia-1          -> .../julia-1.12.6/bin/julia      # greatest installed 1.x   (stable rollup)
-julia-1.12       -> .../julia-1.12.6/bin/julia      # greatest installed 1.12.x (stable rollup)
-julia-1.12.6     -> .../julia-1.12.6/bin/julia      # this exact version
-julia-1.11.5     -> .../julia-1.11.5/bin/julia
+julia-1          -> .../julia-1.12.6/bin/julia      # greatest installed 1.x.y
+julia-1.12       -> .../julia-1.12.6/bin/julia      # greatest installed 1.12.x
+julia-1.12.6     -> .../julia-1.12.6/bin/julia
+julia-1.12.6~x86 -> .../julia-1.12.6~x86/bin/julia
 julia-nightly    -> .../julia-nightly/bin/julia
 ```
 
 The `julia-1` and `julia-1.12` "rollup" links track the greatest installed
-**stable** patch/minor on the default architecture, 
-so a prerelease, nightly, or julia-<version>~<arch> version never hijacks them.
+stable patch/minor on the default architecture.
 Prereleases, nightlies, PR builds, and versions with specified architectures get only their own direct link
 (e.g. `julia-1.13.0-rc1`, `julia-nightly`, `julia-pr1234`, `julia-1.12.6~x86`).
 
-A rollup is **raised on install** (installing a newer patch repoints it; installing
-an older one leaves it alone) and **dropped when its target is removed** — it is
-*not* repointed to an older remaining patch. So removing the newest `1.12.x` makes
-`julia-1.12` disappear until you next install something in that line; the older
-`julia-1.12.5` and its direct link are untouched.
-
 ### Reinstalling
 
-A stable release is immutable, so installing one that's already present does **not**
-re-download it — it just refreshes the symlinks (and, for the default-setting form,
+A stable release is immutable, so installing one that's already present does not
+re-download it. It just refreshes the symlinks (and, for the default-setting form,
 switches the default), after a confirmation prompt that says so. Pass `--reinstall`
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
 Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
@@ -123,21 +114,13 @@ label.
 
 ## Verification
 
-Every download is verified with **GPG** (via `gpgv`) against Julia's official
+Every download is verified with GPG (via `gpgv`) against Julia's official
 signing key, which is bundled in the script. If a
 signature is missing or doesn't verify, the install is aborted.
 
 PR builds are the exception: Julia publishes no signature for them, so the check
 is skipped with a warning. Set `INSTALL_JULIA_NO_VERIFY=1` to skip verification
 entirely (then `gpgv` isn't required).
-
-## Pull-request builds
-
-`pr1234` installs the latest available CI build of pull request 1234:
-
-```sh
-install-julia.sh add pr1234
-```
 
 ## Environment variables
 
@@ -146,15 +129,8 @@ install-julia.sh add pr1234
 | `INSTALL_JULIA_INSTALL_DIR`  | `~/packages/julias`                          | Where versions are unpacked.                       |
 | `INSTALL_JULIA_SYMLINK_DIR`  | `~/.local/bin`                               | Where symlinks are created.                        |
 | `INSTALL_JULIA_NO_VERIFY`    | `0`                                          | Set to `1` to skip GPG verification.               |
-
-### Service endpoints
-
-All baked-in URLs can be overridden.
-
-| Variable                      | Default                                          | Purpose                                                 |
-| ----------------------------- | ------------------------------------------------ | ------------------------------------------------------- |
-| `INSTALL_JULIA_STABLE_URL`    | `https://julialang-s3.julialang.org`             | Base for stable/prerelease binaries.                    |
-| `INSTALL_JULIA_NIGHTLY_URL`   | `https://julialangnightlies-s3.julialang.org`    | Base for nightly and PR builds.                         |
+| `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`             | Base for stable/prerelease binaries.                    |
+| `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org`    | Base for nightly and PR builds.                         |
 
 Stable/prerelease resolution reads `<INSTALL_JULIA_STABLE_URL>/bin/versions.json`
 to discover available versions.
