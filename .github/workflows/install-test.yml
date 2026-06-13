@@ -1,0 +1,36 @@
+name: Install test
+
+# Smoke test: run the install script non-interactively (-y) with all defaults on
+# x86_64 and aarch64 Linux runners, then confirm the installed `julia` actually runs.
+# This does not run test/runtests.jl - it only exercises a plain default install.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  default-install:
+    name: default install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run install script with defaults
+        run: sh src/install-julia.sh -y
+
+      # The script links into $HOME/.local/bin, which isn't on PATH by default on
+      # the runner. Add it for subsequent steps so `julia` resolves.
+      - name: Add symlink dir to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check julia runs
+        run: julia --version
