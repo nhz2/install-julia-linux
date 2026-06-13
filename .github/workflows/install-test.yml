@@ -33,4 +33,4 @@ jobs:
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Check julia runs
-        run: juliaa --version
+        run: julia --version
