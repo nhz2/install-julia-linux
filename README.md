@@ -12,13 +12,13 @@ Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
 ## One line install of the latest version of Julia
 
 ```sh
-curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.1.0/install-julia.sh | sh
+curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh | sh
 ```
 
 ## Install the script for ongoing version management
 
 ```sh
-curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.1.0/install-julia.sh   # or just copy the file
+curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh   # or just copy the file
 chmod +x install-julia.sh
 mv install-julia.sh ~/.local/bin/                  # somewhere on your PATH
 ```
