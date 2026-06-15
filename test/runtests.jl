@@ -509,6 +509,15 @@ end
     @test occursin("Manifest has Julia 1.10.5", r.err)
     @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.10.5/bin/julia")
 
+    # Even a blank JuliaManifest.toml shadows Manifest.toml
+    cleanup()
+    fake_proj_dir = synth("Manifest.toml" => "1.12.6")
+    touch(joinpath(fake_proj_dir, "JuliaManifest.toml"))
+    r = run_script_y("manifest", fake_proj_dir; env)
+    @test r.code == 1
+    @test occursin("no julia_version", r.err)
+    @test !isdir(symlinkdir)
+
     # same version slot: JuliaManifest-v1.12 shadows Manifest-v1.12, so the lower
     # Julia-prefixed version wins — shadowing is by name within a slot, not by version
     cleanup()
