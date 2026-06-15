@@ -13,7 +13,7 @@
 
 set -eu
 
-SELF_VERSION="0.1.0"
+SELF_VERSION="0.2.0-DEV"
 
 # --------------------------------------------------------------------------- #
 # Configuration                                                               #
@@ -766,6 +766,70 @@ cmd_switch() {
 	info "Default 'julia' now points to ${_destname#julia-}"
 }
 
+# Print the top-level `julia_version = "..."` value of a manifest, or nothing.
+manifest_julia_version() {
+	sed -n 's/^julia_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
+}
+
+cmd_manifest() {
+	# cmd_manifest PATH. PATH is a manifest file or a project directory. Resolve the stable Julia version it has, then install + default.
+	_mpath=$1
+
+	if [ -f "$_mpath" ]; then
+		# An explicit file is read as-is (e.g. point straight at a Manifest-v1.11.toml).
+		_raw=$(manifest_julia_version "$_mpath")
+		[ -n "$_raw" ] || die "no julia_version in $_mpath"
+		_where=$_mpath
+	else
+		[ -d "$_mpath" ] || die "no such manifest path: $_mpath"
+		_dir=$_mpath
+		# Mirror Julia's JuliaManifest.toml manifest precedence,
+		# adapted to having no running version:
+		# read every manifest in the folder and (below) install the greatest stable
+		# version. Within a slot - the generic name, or a given -v1.X - the JuliaManifest*
+		# file shadows its plain Manifest* twin. The -v1.<minor>
+		# glob assumes the feature's two-plus-digit minor (Julia 1.10.8+) and no
+		# Julia 2 - revisit if that ships. Accumulate versions, never paths (a path
+		# re-read would split on a newline in a parent dir name); a non-matching glob
+		# stays literal, so -f drops it.
+		_raw=""
+		_found=0
+		for _f in "$_dir"/JuliaManifest.toml "$_dir"/JuliaManifest-v1.[0-9][0-9]*.toml \
+		          "$_dir"/Manifest.toml "$_dir"/Manifest-v1.[0-9][0-9]*.toml; do
+			[ -f "$_f" ] || continue
+			_base=${_f##*/}
+			# a plain Manifest* file is shadowed by its same-slot JuliaManifest* twin
+			case "$_base" in
+				Manifest*) [ -f "$_dir/Julia$_base" ] && continue ;;
+			esac
+			_found=1
+			_v=$(manifest_julia_version "$_f")
+			[ -n "$_v" ] && _raw="$_raw$_v
+"
+		done
+		[ "$_found" = 1 ] || die "no Manifest.toml in $_dir"
+		[ -n "$_raw" ] || die "no julia_version in any manifest in $_dir"
+		_where="manifest in $_dir"
+	fi
+
+	# Keep only full stable releases. A manifest written on a prerelease or a
+	# development build (1.13.0-rc1, 1.14.0-DEV) is not auto-
+	# installed. Julia would pick one of several per-version
+	# manifests by its running version; we have none, so across the stable
+	# candidates we install the greatest.
+	_version=$(printf '%s\n' "$_raw" | while IFS= read -r _v; do
+		[ -n "$_v" ] || continue
+		is_version "$_v" || continue
+		has_dash "$_v" && continue
+		printf '%s\n' "$_v"
+	done | version_max)
+	[ -n "$_version" ] ||
+		die "no installable stable Julia version in $_where (found: $(printf '%s' "$_raw" | tr '\n' ' '))"
+
+	info "Manifest has Julia $_version"
+	cmd_install "$_version" 1
+}
+
 # Remove one already-resolved build (dir name like julia-1.12.6 / julia-nightly).
 remove_one() {
 	_destname=$1
@@ -870,6 +934,9 @@ Commands:
   install-julia.sh remove <version>   delete a version and its symlinks
                                       (alias: rm)
   install-julia.sh list               list installed versions (alias: ls)
+  install-julia.sh manifest <path>    install the stable Julia version a project's
+                                      Manifest.toml was written with, make it the
+                                      default (path is a manifest file or a project dir)
   install-julia.sh                    install the latest stable release
 
 Options:
@@ -930,6 +997,10 @@ main() {
 			cmd_remove "$_arg" ;;
 		list | ls)
 			cmd_list ;;
+		manifest)
+			# A bare `manifest` (no path) is intentionally reserved for future use.
+			[ -n "$_arg" ] || die "usage: install-julia.sh manifest <path>"
+			cmd_manifest "$_arg" ;;
 		"")
 			cmd_install "" 1 ;;             # default: latest stable, set default
 		*)
