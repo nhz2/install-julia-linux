@@ -46,7 +46,7 @@ install-julia.sh [options] [command] [version]
 | `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
 | `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies). A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. Alias: `rm`. |
 | `install-julia.sh list`              | List installed versions. Alias: `ls`.                                        |
-| `install-julia.sh manifest <path>`   | Install the stable version from a project's `Manifest.toml`, make it the default (path is a manifest file or a project dir) |
+| `install-julia.sh manifest <path>`   | Install the stable Julia version a project's `Manifest.toml` was written with, and make it the default (path is a manifest file or a project dir) |
 
 ### Options
 
@@ -147,7 +147,7 @@ to discover available versions.
 ```sh
 install-julia.sh                       # latest stable, set as default
 install-julia.sh 1.12                  # latest 1.12.x, set as default
-install-julia.sh manifest .            # install the stable version in the Manifest.toml and set as default
+install-julia.sh manifest .            # install the stable version the Manifest.toml was written with, set as default
 install-julia.sh add 1.10              # install 1.10.x without changing the default
 install-julia.sh add nightly           # add the master nightly
 install-julia.sh add pre               # add the latest prerelease or stable

@@ -768,11 +768,11 @@ cmd_switch() {
 
 # Print the top-level `julia_version = "..."` value of a manifest, or nothing.
 manifest_julia_version() {
-	sed -n 's/^julia_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n1
+	sed -n 's/^julia_version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
 cmd_manifest() {
-	# cmd_manifest PATH. PATH is a manifest file or a project directory. Resolve the stable Julia version it pins, then install + default.
+	# cmd_manifest PATH. PATH is a manifest file or a project directory. Resolve the stable Julia version it has, then install + default.
 	_mpath=$1
 
 	if [ -f "$_mpath" ]; then
@@ -783,7 +783,8 @@ cmd_manifest() {
 	else
 		[ -d "$_mpath" ] || die "no such manifest path: $_mpath"
 		_dir=$_mpath
-		# Mirror Julia's manifest precedence, adapted to having no running version:
+		# Mirror Julia's JuliaManifest.toml manifest precedence,
+		# adapted to having no running version:
 		# read every manifest in the folder and (below) install the greatest stable
 		# version. Within a slot - the generic name, or a given -v1.X - the JuliaManifest*
 		# file shadows its plain Manifest* twin. The -v1.<minor>
@@ -812,7 +813,7 @@ cmd_manifest() {
 	fi
 
 	# Keep only full stable releases. A manifest written on a prerelease or a
-	# development build (1.13.0-rc1, 1.14.0-DEV) are not auto-
+	# development build (1.13.0-rc1, 1.14.0-DEV) is not auto-
 	# installed. Julia would pick one of several per-version
 	# manifests by its running version; we have none, so across the stable
 	# candidates we install the greatest.
@@ -933,9 +934,9 @@ Commands:
   install-julia.sh remove <version>   delete a version and its symlinks
                                       (alias: rm)
   install-julia.sh list               list installed versions (alias: ls)
-  install-julia.sh manifest <path>    install the stable version from a project's
-                                      Manifest.toml, make it the default
-                                      (path is a manifest file or a project dir)
+  install-julia.sh manifest <path>    install the stable Julia version a project's
+                                      Manifest.toml was written with, make it the
+                                      default (path is a manifest file or a project dir)
   install-julia.sh                    install the latest stable release
 
 Options:
@@ -997,7 +998,7 @@ main() {
 		list | ls)
 			cmd_list ;;
 		manifest)
-			# A bare `manifest` (no path) is intentionally reserved for future use,
+			# A bare `manifest` (no path) is intentionally reserved for future use.
 			[ -n "$_arg" ] || die "usage: install-julia.sh manifest <path>"
 			cmd_manifest "$_arg" ;;
 		"")

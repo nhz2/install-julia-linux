@@ -510,7 +510,7 @@ end
     @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.10.5/bin/julia")
 
     # same version slot: JuliaManifest-v1.12 shadows Manifest-v1.12, so the lower
-    # Julia-prefixed pin wins — shadowing is by name within a slot, not by version
+    # Julia-prefixed version wins — shadowing is by name within a slot, not by version
     cleanup()
     r = run_script_y("manifest", synth("JuliaManifest-v1.12.toml" => "1.12.5",
                                        "Manifest-v1.12.toml" => "1.12.6"); env)
@@ -633,7 +633,7 @@ end
 
     # the per-version glob is -v1.<2+-digit minor>: a single-digit-minor file like
     # Manifest-v1.9.toml predates the feature (Julia 1.10.8+), so it is ignored and
-    # a high version pinned there never hijacks the result
+    # a high version there never hijacks the result
     cleanup()
     r = run_script_y("manifest", synth("Manifest.toml" => "1.11.3",
                                        "Manifest-v1.9.toml" => "1.99.0"); env)
@@ -649,7 +649,7 @@ end
     @test occursin("Manifest has Julia 1.101.3", r.err)
     @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.101.3/bin/julia")
 
-    # several manifests that ALL pin prereleases/dev builds: reject, naming each
+    # several manifests that ALL have prereleases/dev builds: reject, naming each
     # offending version in the error
     cleanup()
     r = run_script_y("manifest", synth("Manifest.toml" => "1.13.0-rc1",
