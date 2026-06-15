@@ -951,6 +951,18 @@ Versions:
   (switch resolves a numeric prefix to the greatest installed stable
   patch; prereleases, nightlies, and ~arch builds need their exact id)
 
+Environment variables:
+  INSTALL_JULIA_INSTALL_DIR   where versions are unpacked
+                              (default: ~/packages/julias)
+  INSTALL_JULIA_SYMLINK_DIR   where symlinks are created
+                              (default: ~/.local/bin)
+  INSTALL_JULIA_NO_VERIFY     set to 1 to skip GPG verification
+                              (default: 0)
+  INSTALL_JULIA_STABLE_URL    base for stable/prerelease binaries
+                              (default: https://julialang-s3.julialang.org)
+  INSTALL_JULIA_NIGHTLY_URL   base for nightly and PR builds
+                              (default: https://julialangnightlies-s3.julialang.org)
+
 See README.md for full documentation.
 EOF
 }

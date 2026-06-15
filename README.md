@@ -15,7 +15,7 @@ Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
 curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.1.0/install-julia.sh | sh
 ```
 
-## Install
+## Install the script for ongoing version management
 
 ```sh
 curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.1.0/install-julia.sh   # or just copy the file
@@ -30,6 +30,20 @@ Make sure your symlink directory (default `~/.local/bin`) is on your `PATH`.
 ```sh
 install-julia.sh                # install the latest stable Julia, make it default
 julia                           # ...now on your PATH
+```
+
+## Other examples
+
+```sh
+install-julia.sh 1.12                  # latest 1.12.x, set as default
+install-julia.sh manifest .            # install the stable version the Manifest.toml was written with, set as default
+install-julia.sh add 1.10              # install 1.10.x without changing the default
+install-julia.sh add nightly           # add the master nightly
+install-julia.sh add pre               # add the latest prerelease or stable
+install-julia.sh switch 1.10           # make 1.10.x the default julia
+install-julia.sh switch ~/build/julia/usr/bin/julia   # point julia at a custom build
+install-julia.sh remove 1.10           # delete all 1.10.*
+install-julia.sh list                  # show what's installed
 ```
 
 ## Usage
@@ -80,6 +94,19 @@ install-julia.sh 1.10~x86        # force 32-bit (i686)
 install-julia.sh 1.10~aarch64    # force ARM64
 ```
 
+## Environment variables
+
+| Variable                     | Default                                       | Purpose                                            |
+| ---------------------------- | --------------------------------------------- | -------------------------------------------------- |
+| `INSTALL_JULIA_INSTALL_DIR`  | `~/packages/julias`                           | Where versions are unpacked.                       |
+| `INSTALL_JULIA_SYMLINK_DIR`  | `~/.local/bin`                                | Where symlinks are created.                        |
+| `INSTALL_JULIA_NO_VERIFY`    | `0`                                           | Set to `1` to skip GPG verification.               |
+| `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`          | Base for stable/prerelease binaries.               |
+| `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly and PR builds.                    |
+
+Stable/prerelease resolution reads `<INSTALL_JULIA_STABLE_URL>/bin/versions.json`
+to discover available versions.
+
 ## How it lays things out
 
 Versions are unpacked into `INSTALL_JULIA_INSTALL_DIR` (default
@@ -112,7 +139,7 @@ Prereleases, nightlies, PR builds, and versions with specified architectures get
 
 ### Reinstalling
 
-A stable release is immutable, so installing one that's already present does not
+Installing a stable or prerelease version that's already present does not
 re-download it. It just refreshes the symlinks (and, for the default-setting form,
 switches the default), after a confirmation prompt that says so. Pass `--reinstall`
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
@@ -128,34 +155,6 @@ signature is missing or doesn't verify, the install is aborted.
 PR builds are the exception: Julia publishes no signature for them, so the check
 is skipped with a warning. Set `INSTALL_JULIA_NO_VERIFY=1` to skip verification
 entirely (then `gpgv` isn't required).
-
-## Environment variables
-
-| Variable                     | Default                                      | Purpose                                            |
-| ---------------------------- | -------------------------------------------- | -------------------------------------------------- |
-| `INSTALL_JULIA_INSTALL_DIR`  | `~/packages/julias`                          | Where versions are unpacked.                       |
-| `INSTALL_JULIA_SYMLINK_DIR`  | `~/.local/bin`                               | Where symlinks are created.                        |
-| `INSTALL_JULIA_NO_VERIFY`    | `0`                                          | Set to `1` to skip GPG verification.               |
-| `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`             | Base for stable/prerelease binaries.                    |
-| `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org`    | Base for nightly and PR builds.                         |
-
-Stable/prerelease resolution reads `<INSTALL_JULIA_STABLE_URL>/bin/versions.json`
-to discover available versions.
-
-## Examples
-
-```sh
-install-julia.sh                       # latest stable, set as default
-install-julia.sh 1.12                  # latest 1.12.x, set as default
-install-julia.sh manifest .            # install the stable version the Manifest.toml was written with, set as default
-install-julia.sh add 1.10              # install 1.10.x without changing the default
-install-julia.sh add nightly           # add the master nightly
-install-julia.sh add pre               # add the latest prerelease or stable
-install-julia.sh switch 1.10           # make 1.10.x the default julia
-install-julia.sh switch ~/build/julia/usr/bin/julia   # point julia at a custom build
-install-julia.sh remove 1.10           # delete all 1.10.*
-install-julia.sh list                  # show what's installed
-```
 
 ## AI usage
 
