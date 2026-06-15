@@ -458,6 +458,207 @@ end
     @test isempty(filter(startswith("."), readdir(installdir)))
     @test isempty(filter(startswith("."), readdir(symlinkdir)))
 end
+@testset "manifest" begin
+    # `manifest <path>` reads the julia_version of a project from its
+    # Manifest.toml and installs that exact stable release as the default. The
+    # fixtures under test/*-proj are real-shaped manifests covering each case.
+    cleanup()
+    proj(name) = joinpath(@__DIR__, name)
+    # build a synthetic project dir from filename => julia_version pairs
+    function synth(pairs::Pair...)
+        d = mktempdir()
+        for (name, v) in pairs
+            write(joinpath(d, name), "julia_version = \"$v\"\nmanifest_format = \"2.0\"\n")
+        end
+        d
+    end
+    mr = fake_mirror("1.0.0", "1.10.5", "1.11.3", "1.12.5", "1.12.6", "1.12.7", "1.13.0-rc1", "1.101.3")
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+
+    # a "." path reads ./Manifest.toml from the cwd, install + set default
+    r = run_script_y("manifest", "."; env, dir=proj("regular-proj"))
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.6", r.err)
+    @test occursin("Resolved '1.12.6' -> 1.12.6 (release)", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.6/bin/julia")
+
+    # a bare `manifest` with no path is reserved for future use
+    cleanup()
+    r = run_script_y("manifest"; env, dir=proj("regular-proj"))
+    @test r.code == 1
+    @test occursin("usage: install-julia.sh manifest", r.err)
+    @test !isdir(symlinkdir)
+
+    # an explicit path to a manifest file works the same
+    cleanup()
+    r = run_script_y("manifest", joinpath(proj("regular-proj"), "Manifest.toml"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.6", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.6/bin/julia")
+
+    # Precedence follows Julia's per-slot shadowing, adapted to picking the greatest
+    # version (we have no running version to select by). Within a slot a JuliaManifest*
+    # name shadows its plain Manifest* twin; across slots the greatest stable wins.
+
+    # generic slot: JuliaManifest.toml shadows Manifest.toml even when the plain file
+    # has a HIGHER version
+    cleanup()
+    r = run_script_y("manifest", synth("JuliaManifest.toml" => "1.10.5",
+                                       "Manifest.toml" => "1.12.6"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.10.5", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.10.5/bin/julia")
+
+    # same version slot: JuliaManifest-v1.12 shadows Manifest-v1.12, so the lower
+    # Julia-prefixed pin wins — shadowing is by name within a slot, not by version
+    cleanup()
+    r = run_script_y("manifest", synth("JuliaManifest-v1.12.toml" => "1.12.5",
+                                       "Manifest-v1.12.toml" => "1.12.6"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.5", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.5/bin/julia")
+
+    # different slots: a plain Manifest-v1.12 is NOT shadowed (no JuliaManifest-v1.12),
+    # so it counts, and the greatest across slots wins over the lower JuliaManifest-v1.11
+    cleanup()
+    r = run_script_y("manifest", synth("JuliaManifest-v1.11.toml" => "1.11.3",
+                                       "Manifest-v1.12.toml" => "1.12.6",
+                                       "Manifest.toml" => "1.12.5"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.6", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.6/bin/julia")
+
+    # max across surviving slots: Manifest.toml (1.12.6) is shadowed by JuliaManifest.toml
+    # in the generic slot, leaving {1.10.5, 1.11.3} -> 1.11.3
+    cleanup()
+    r = run_script_y("manifest", synth("JuliaManifest.toml" => "1.10.5",
+                                       "JuliaManifest-v1.11.toml" => "1.11.3",
+                                       "Manifest.toml" => "1.12.6"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.11.3", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.11.3/bin/julia")
+
+    # several Manifest-vX.Y.toml in one folder: install the greatest stable
+    cleanup()
+    r = run_script_y("manifest", synth("Manifest-v1.12.toml" => "1.12.6",
+                                       "Manifest-v1.13.toml" => "1.13.0-rc1",
+                                       "Manifest.toml" => "1.11.3"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.6", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.6/bin/julia")
+
+    # an old format-1.0 manifest has no julia_version: clear error, nothing installed
+    cleanup()
+    r = run_script_y("manifest", "."; env, dir=proj("old-proj"))
+    @test r.code == 1
+    @test occursin("no julia_version", r.err)
+    @test !isdir(symlinkdir)
+
+    # a prerelease (1.13.0-rc1) is rejected, not installed
+    cleanup()
+    r = run_script_y("manifest", "."; env, dir=proj("prerelease-proj"))
+    @test r.code == 1
+    @test occursin("1.13.0-rc1", r.err)
+    @test !isdir(symlinkdir)
+
+    # a dev version: only the top-level julia_version (1.14.0-DEV) is read, never the
+    # 1.0.0 nested under [deps.Example.syntax]. It's a dev build, so it's rejected
+    # - and 1.0.0 must NOT get installed despite the mirror serving it.
+    cleanup()
+    r = run_script_y("manifest", "."; env, dir=proj("nightly-proj"))
+    @test r.code == 1
+    @test occursin("1.14.0-DEV", r.err)
+    @test !occursin("has Julia 1.0.0", r.err)
+    @test !isdir(installdir)
+
+    # a project directory with no manifest at all
+    cleanup()
+    r = run_script_y("manifest", "."; env, dir=mktempdir())
+    @test r.code == 1
+    @test occursin("no Manifest.toml", r.err)
+    @test !isdir(symlinkdir)
+
+    # an explicit path that does not exist
+    cleanup()
+    r = run_script_y("manifest", "/no/such/Manifest.toml"; env)
+    @test r.code == 1
+    @test occursin("no such manifest path", r.err)
+    @test !isdir(symlinkdir)
+
+    # a project directory whose path contains a newline must still resolve: the
+    # script reads each manifest in a single pass over versions, never joining
+    # file paths into a string it re-splits on newlines. Build it at runtime,
+    # since such a directory can't be a committed fixture.
+    cleanup()
+    body(v) = "julia_version = \"$v\"\nmanifest_format = \"2.0\"\nproject_hash = \"abc\"\n"
+    weird = joinpath(mktempdir(), "we\nird-proj")
+    mkpath(weird)
+    write(joinpath(weird, "Manifest.toml"), body("1.11.1"))
+    write(joinpath(weird, "Manifest-v1.12.toml"), body("1.12.6"))
+    r = run_script_y("manifest", weird; env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.12.6", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.12.6/bin/julia")
+
+    # a malformed julia_version must never reach the install path. Extraction is
+    # line-oriented, so a newline in the value can't be captured as one piece, and
+    # whatever is captured is gated by the version validator - so a value with an
+    # embedded newline, or with path-traversal characters, is rejected outright
+    # and nothing is installed.
+    for bad in ("julia_version = \"1.12.6\nmalicious\"\nmanifest_format = \"2.0\"\n",
+                "julia_version = \"1.12.6/../../etc\"\nmanifest_format = \"2.0\"\n")
+        cleanup()
+        d = mktempdir()
+        write(joinpath(d, "Manifest.toml"), bad)
+        r = run_script_y("manifest", d; env)
+        @test r.code == 1
+        @test !isdir(symlinkdir)
+        @test !isdir(installdir)
+    end
+
+    # extraction shrugs off common real-world formatting: CRLF line endings, no or
+    # odd spacing around '=', and a commented-out decoy before the real top-level
+    # key (the column-0 anchor skips the '#'-led line).
+    for content in ("julia_version = \"1.12.6\"\r\nmanifest_format = \"2.0\"\r\n",
+                    "julia_version=\"1.12.6\"\n",
+                    "julia_version\t=\t\"1.12.6\"\n",
+                    "# julia_version = \"9.9.9\"\njulia_version = \"1.12.6\"\n")
+        cleanup()
+        d = mktempdir()
+        write(joinpath(d, "Manifest.toml"), content)
+        r = run_script_y("manifest", d; env)
+        @test r.code == 0
+        @test occursin("Manifest has Julia 1.12.6", r.err)
+    end
+
+    # the per-version glob is -v1.<2+-digit minor>: a single-digit-minor file like
+    # Manifest-v1.9.toml predates the feature (Julia 1.10.8+), so it is ignored and
+    # a high version pinned there never hijacks the result
+    cleanup()
+    r = run_script_y("manifest", synth("Manifest.toml" => "1.11.3",
+                                       "Manifest-v1.9.toml" => "1.99.0"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.11.3", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.11.3/bin/julia")
+
+    # If a minor>99 is supported
+    cleanup()
+    r = run_script_y("manifest", synth("Manifest-v1.101.toml" => "1.101.3",
+                                       "Manifest.toml" => "1.12.6"); env)
+    @test r.code == 0
+    @test occursin("Manifest has Julia 1.101.3", r.err)
+    @test readlink(joinpath(symlinkdir, "julia")) == joinpath(installdir, "julia-1.101.3/bin/julia")
+
+    # several manifests that ALL pin prereleases/dev builds: reject, naming each
+    # offending version in the error
+    cleanup()
+    r = run_script_y("manifest", synth("Manifest.toml" => "1.13.0-rc1",
+                                       "Manifest-v1.14.toml" => "1.14.0-DEV"); env)
+    @test r.code == 1
+    @test occursin("1.13.0-rc1", r.err)
+    @test occursin("1.14.0-DEV", r.err)
+    @test !isdir(installdir)
+end
 @testset "verification failure" begin
     # the security-critical failure paths, each against its own hostile copy of
     # the mirror fixture: verification must fail closed, before anything is
