@@ -2,6 +2,7 @@ using Test
 using Expect: ExpectProc, expect!
 using Downloads: download
 using ChunkCodecLibZlib: GzipEncodeOptions, encode
+using ShellCheck_jll: shellcheck
 import Tar
 import JSON
 
@@ -109,7 +110,7 @@ end
 
 
 @testset "shellcheck" begin
-    @test success(run(`shellcheck $(script) --severity=warning`))
+    @test success(run(`$(shellcheck()) $(script) --severity=warning`))
 end
 @testset "version" begin
     r = run_script("--version")
