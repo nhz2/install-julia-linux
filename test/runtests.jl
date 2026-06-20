@@ -30,6 +30,10 @@ if !isdir(mirror)
             joinpath(mirror, tarballname*".asc")
         )
         write(joinpath(mirror, "bin/versions.json"), read(joinpath(@__DIR__, "test-version.json")))
+        download(
+            "https://julialang-s3.julialang.org/bin/versions.json",
+            joinpath(mirror, "bin/real-versions.json")
+        )
     catch
         rm(mirror; recursive=true, force=true)
         rethrow()
@@ -53,31 +57,69 @@ function fake_tarball(version)
     encode(GzipEncodeOptions(), read(Tar.create(src)))
 end
 
+# Julia's conventional storage path (and thus url) for a version's tarball. Tests
+# override `layout` to prove the script follows the manifest url, not this path.
+conventional_layout(v, bucket, filearch) =
+    "bin/linux/$bucket/$(join(split(v, '.')[1:2], '.'))/julia-$v-linux-$filearch.tar.gz"
+
 # A mirror serving fake tarballs for the given versions, with a versions.json
-# manifest shaped like the real one listing exactly them. `arch` is the
-# (stable bucket dir, filename arch) pair, e.g. ("x64", "x86_64"), ("x86", "i686").
-function fake_mirror(versions...; arch=("x64", "x86_64"))
+# manifest shaped like the real one (per versions-schema.json) listing exactly them.
+# `arch` is the (stable bucket dir, filename arch) pair, e.g. ("x64", "x86_64").
+# Kwargs for edge-case tests, all defaulting to the realistic case:
+#   layout          - (v,bucket,filearch)->relpath: where the tarball is stored AND
+#                     what the manifest url points at (the two always agree).
+#   tarball_version - v->content_version: lets the served tarball carry a DIFFERENT
+#                     internal version than the manifest key (version-binding tests).
+#   triplet         - override the manifest `triplet` (defaults to <filearch>-linux-gnu).
+function fake_mirror(versions...; arch=("x64", "x86_64"),
+                     layout=conventional_layout, tarball_version=identity,
+                     triplet=nothing)
     bucket, filearch = arch
+    trip = triplet === nothing ? "$filearch-linux-gnu" : triplet
     mr = joinpath(mktempdir(), "mirror")
     manifest = Dict()
     for v in versions
-        minor = join(split(v, '.')[1:2], '.')
-        name = "bin/linux/$bucket/$minor/julia-$v-linux-$filearch.tar.gz"
+        name = layout(v, bucket, filearch)
         path = joinpath(mr, name)
         mkpath(dirname(path))
-        write(path, fake_tarball(v))
-        manifest[v] = Dict(
-            "files" => [Dict(
-                "url" => "https://julialang-s3.julialang.org/$name",
-                "version" => v, "os" => "linux", "arch" => filearch,
-                "kind" => "archive", "extension" => "tar.gz",
-            )],
-            "stable" => !occursin('-', v),
+        write(path, fake_tarball(tarball_version(v)))
+        file = Dict(
+            "url" => "https://julialang-s3.julialang.org/$name",
+            "version" => v, "os" => "linux", "arch" => filearch,
+            "triplet" => trip, "kind" => "archive", "extension" => "tar.gz",
         )
+        manifest[v] = Dict("files" => [file], "stable" => !occursin('-', v))
     end
     mkpath(joinpath(mr, "bin"))
     write(joinpath(mr, "bin/versions.json"), JSON.json(manifest))
     mr
+end
+
+# Drive the script's internal load_table directly and return its emitted rows as
+# a Set of "<version> <url-suffix>" strings. load_table is normally only reachable
+# through cmd_install, so source the script with its final `main "$@"` line removed
+# (functions get defined, the program doesn't run), then set the three globals
+# load_table reads and dump VERSION_URL_TABLE. The manifest is served from a
+# throwaway file:// mirror whose bin/versions.json is the given fixture.
+function shell_load_table(versions_json; triplet, filter)
+    mr = mktempdir()
+    mkpath(joinpath(mr, "bin"))
+    cp(versions_json, joinpath(mr, "bin", "versions.json"))
+    harness = joinpath(mr, "harness.sh")
+    write(harness, replace(read(script, String), r"\nmain \"\$@\"\n?$" => "\n"))
+    shq(s) = "'" * replace(s, "'" => "'\"'\"'") * "'"
+    code = """
+        . $(shq(harness))
+        VERSION_SEARCH_FILTER=$(shq(filter))
+        ARCH_TRIPLET=$(shq(triplet))
+        STABLE_BASE=$(shq("file://$mr"))
+        load_table
+        printf '%s' "\$VERSION_URL_TABLE"
+        """
+    out, err = IOBuffer(), IOBuffer()
+    run(pipeline(`sh -euc $code`, stdout=out, stderr=err))
+    outs = String(take!(out))
+    Set(isempty(outs) ? String[] : split(outs, '\n'))
 end
 
 function run_script(args::String...; env=(), dir=pwd())
@@ -154,6 +196,15 @@ end
     @test r.code == 1
     @test r.err == "error: unrecognized version specifier: foo\n"
     @test !isdir(installdir)   # died before mkdir -p INSTALL_DIR
+
+    # '+' is not a legal spec character (build metadata is unsupported, and it is an
+    # ERE metacharacter reesc does not escape): rejected up front, before any fetch
+    for spec in ("1+0", "1.0.0+build", "1.2+3")
+        r = run_script_y(spec)
+        @test r.code == 1
+        @test r.err == "error: bad version specifier: $spec\n"
+    end
+    @test !isdir(installdir)
 
     # `remove` must reject a path-shaped target too: match_installed resolves an
     # exact id with [ -d "$INSTALL_DIR/julia-$q" ], so without this guard
@@ -699,14 +750,22 @@ end
     @test occursin("refusing to install unverified", r.err)
     @test !isdir(joinpath(installdir, "julia-1.0.0"))
 
-    # version substitution: a genuine, validly-signed 1.0.0 tarball served under
-    # a 1.0.1 URL passes GPG but must die on the version-binding check
+    # version substitution: a genuine, validly-signed 1.0.0 tarball served under a
+    # 1.0.1 url (a manifest entry for 1.0.1 points right at it) passes GPG but must
+    # die on the version-binding check - the manifest cannot smuggle in an old build
+    # under a new version number
     subst = joinpath(mktempdir(), "mirror")
     substname = "bin/linux/x64/1.0/julia-1.0.1-linux-x86_64.tar.gz"
     mkpath(dirname(joinpath(subst, substname)))
     for ext in ("", ".asc")
         cp(joinpath(mirror, tarballname * ext), joinpath(subst, substname * ext))
     end
+    write(joinpath(subst, "bin/versions.json"), JSON.json(Dict("1.0.1" => Dict(
+        "files" => [Dict(
+            "url" => "https://julialang-s3.julialang.org/$substname",
+            "version" => "1.0.1", "os" => "linux", "arch" => "x86_64",
+            "triplet" => "x86_64-linux-gnu", "kind" => "archive", "extension" => "tar.gz",
+        )], "stable" => true))))
     r = run_script_y("add", "1.0.1"; env=("INSTALL_JULIA_STABLE_URL" => "file://$subst",))
     @test r.code == 1
     @test occursin("Good signature from", r.err)   # the attack defeats GPG...
@@ -805,6 +864,16 @@ end
         @test occursin("no installed version matching '$q'", r.err)
     end
     @test julialink() == target("nightly")   # the failures left the default alone
+
+    # ERE metacharacters are rejected up front, not interpreted by the `grep -E`
+    # prefix match (reesc only escapes '.'). Without this guard `1+` would silently
+    # match 11.x-style builds and `1.*`/`1.10.0[` would mis-resolve or error out.
+    for q in ("1+", "1.*", "1.10.0[", "1.9.9+")
+        r = run_script_y("switch", q)
+        @test r.code == 1
+        @test r.err == "error: bad version specifier: $q\n"
+    end
+    @test julialink() == target("nightly")   # default still untouched
 end
 @testset "remove sweep" begin
     # a numeric prefix sweeps its whole line - releases, prereleases, the branch
@@ -961,14 +1030,14 @@ end
     @test r.code == 0
     @test occursin("Resolved 'pre' -> 1.3.0 (release)", r.err)
 
-    # version binding still holds for fake builds: the relaxed sed reads the
-    # no-trailing-slash dir entry that Tar.jl writes, so a Tar.jl tarball
-    # served under the wrong version name is caught, not reported as 'unknown'
-    wrongname = "bin/linux/x64/1.3/julia-1.3.1-linux-x86_64.tar.gz"
-    mkpath(dirname(joinpath(mr, wrongname)))
-    cp(joinpath(mr, "bin/linux/x64/1.3/julia-1.3.0-linux-x86_64.tar.gz"),
-       joinpath(mr, wrongname))
-    r = run_script_y("add", "1.3.1"; env)
+    # version binding still holds for fake builds, even when the MANIFEST is the
+    # liar: a 1.3.1 entry whose tarball actually contains 1.3.0. The relaxed sed
+    # reads the no-trailing-slash dir entry that Tar.jl writes, so the mismatch is
+    # caught, not reported as 'unknown'.
+    cleanup()
+    liar = fake_mirror("1.3.1"; tarball_version = _ -> "1.3.0")
+    r = run_script_y("add", "1.3.1"; env=("INSTALL_JULIA_STABLE_URL" => "file://$liar",
+                                          "INSTALL_JULIA_NO_VERIFY" => "1"))
     @test r.code == 1
     @test occursin("version mismatch: requested 1.3.1 but tarball reports '1.3.0'", r.err)
 
@@ -1000,14 +1069,16 @@ end
     mr = fake_mirror("1.9.9", "1.10.0")
     env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr",
            "INSTALL_JULIA_NO_VERIFY" => "1")
+    # endswith, not ==: load_table prints the "Downloading versions manifest" status
+    # (and curl's progress bar) to stderr before the resolution failure.
     r = run_script_y("add", "9"; env)
     @test r.code == 1
-    @test r.err == "error: no stable release matching '9' for x86_64\n"
+    @test endswith(r.err, "error: no stable release matching '9' for x86_64-linux-gnu\n")
 
     empty = fake_mirror()
     r = run_script_y(; env=("INSTALL_JULIA_STABLE_URL" => "file://$empty",))
     @test r.code == 1
-    @test r.err == "error: no stable release matching '' for x86_64\n"
+    @test endswith(r.err, "error: no stable release matching '' for x86_64-linux-gnu\n")
 
     # sort -V across the two-digit minor boundary: 1.10.0 outranks 1.9.9
     # (a plain lexical sort would invert this)
@@ -1050,7 +1121,9 @@ end
            "INSTALL_JULIA_NO_VERIFY" => "1")
     r = run_script_y("add", "1.0.0"; env)
     @test r.code == 0
-    @test occursin("Downloading", r.err)   # fresh install downloads
+    # Match the tarball download specifically, not the "Downloading versions
+    # manifest" status line load_table prints on a fresh resolve.
+    @test occursin(r"Downloading \S+\.tar\.gz", r.err)   # fresh install downloads
 
     # -y alone on an installed stable release: symlink refresh only - no
     # re-download, and the installed tree itself is left untouched
@@ -1065,7 +1138,7 @@ end
     # auto re-download-and-replace takes BOTH -y and --reinstall
     r = run_script_y("--reinstall", "add", "1.0.0"; env)
     @test r.code == 0
-    @test occursin("Downloading", r.err)
+    @test occursin(r"Downloading \S+\.tar\.gz", r.err)
     @test occursin("already installed; refreshing", r.err)
     @test !isfile(marker)   # the build was replaced wholesale
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
@@ -1073,13 +1146,22 @@ end
 @testset "interrupted download" begin
     cleanup()
     mr = fake_mirror("1.0.0")
-    # a stalling curl shadowing the real one: it signals it was invoked, then
-    # hangs like a dead network until the interrupt below kills it
+    # a stalling curl shadowing the real one: it passes the versions.json fetch
+    # through to the real curl (so resolution completes and staging is created),
+    # then signals it was invoked and hangs like a dead network on the tarball
+    # download until the interrupt below kills it
     farm = mktempdir()
     sentinel = joinpath(farm, "curl-started")
     fakecurl = joinpath(farm, "curl")
+    realcurl = Sys.which("curl")
     # sleep 30 is only a backstop; the group SIGINT below kills it immediately
-    write(fakecurl, "#!/bin/sh\ntouch '$sentinel'\nexec sleep 30\n")
+    write(fakecurl, """#!/bin/sh
+    case "\$*" in
+        *versions.json*) exec $realcurl "\$@" ;;
+    esac
+    touch '$sentinel'
+    exec sleep 30
+    """)
     chmod(fakecurl, 0o755)
 
     # A terminal's ctrl-C sends SIGINT to the whole foreground process group.
@@ -1303,4 +1385,331 @@ end
     @test occursin("3 installed versions match '1.0'", r.err)
     @test readdir(installdir) == ["julia-nightly~x86"]
     @test readdir(symlinkdir) == ["julia-nightly~x86"]   # default pointed into a removed copy
+
+    # uname-spelling aliases normalize to Julia's filename/triplet names, matching
+    # rustup-init.sh's get_architecture - notably `ppc64le` (what a Linux host
+    # actually reports) -> powerpc64le, `armv8l` -> armv7l, and `amd64` -> x86_64.
+    # The build is selected by the resulting triplet, so the alias resolves to a
+    # mirror published under the canonical filearch even though the user typed
+    # the alias.
+    for (aliasname, bucket, filearch, triplet) in (
+            ("ppc64le", "powerpc64le", "powerpc64le", "powerpc64le-linux-gnu"),
+            ("armv8l",  "armv7l",      "armv7l",      "armv7l-linux-gnueabihf"),
+            ("amd64",   "x64",         "x86_64",      "x86_64-linux-gnu"))
+        cleanup()
+        amr = fake_mirror("1.0.0"; arch=(bucket, filearch), triplet)
+        r = run_script_y("add", "1.0.0~$aliasname"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$amr",
+            "INSTALL_JULIA_NO_VERIFY" => "1",
+        ))
+        @test r.code == 0
+        @test occursin("Resolved '1.0.0~$aliasname' -> 1.0.0~$aliasname (release)", r.err)
+        @test isfile(joinpath(installdir, "julia-1.0.0~$aliasname/bin/julia"))
+    end
+end
+@testset "manifest url layout" begin
+    # The download url comes from the manifest, NOT a path the script reconstructs.
+    # Serve the tarball at a non-conventional location and point the manifest url at
+    # it: a path-constructing resolver would look under bin/linux/x64/... and 404.
+    cleanup()
+    weird(v, bucket, filearch) = "bin/relocated/$v/some-blob.tgz"
+    mr = fake_mirror("1.0.0"; layout=weird)
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    # the conventional path genuinely does not exist in this mirror
+    @test !isfile(joinpath(mr, "bin/linux/x64/1.0/julia-1.0.0-linux-x86_64.tar.gz"))
+    @test isfile(joinpath(mr, "bin/relocated/1.0.0/some-blob.tgz"))
+    r = run_script_y("add", "1.0.0"; env)
+    @test r.code == 0
+    @test occursin("relocated/1.0.0/some-blob.tgz", r.err)   # followed the manifest url
+    @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+
+    # discovery (prefix resolution) reads the same manifest, so a bare/prefix spec
+    # finds the relocated build too
+    cleanup()
+    mr = fake_mirror("1.0.0", "1.0.1"; layout=weird)
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    r = run_script_y("add", "1.0"; env)
+    @test r.code == 0
+    @test occursin("Resolved '1.0' -> 1.0.1 (release)", r.err)
+    @test occursin("relocated/1.0.1/some-blob.tgz", r.err)
+end
+@testset "manifest url under unexpected base is rejected" begin
+    # A url must live under a KNOWN base: STABLE_BASE or the official bucket. One
+    # pointing at any other host is dropped by load_table's trust gate (not rebased), so
+    # a hostile manifest can neither redirect the download nor sneak its path onto our
+    # base. The dropped row leaves no archive for the version, so resolution fails.
+    cleanup()
+    mr = fake_mirror("1.0.0")
+    m = JSON.parse(read(joinpath(mr, "bin/versions.json"), String))
+    m["1.0.0"]["files"][1]["url"] =
+        "https://evil.example.invalid/bin/linux/x64/1.0/julia-1.0.0-linux-x86_64.tar.gz"
+    write(joinpath(mr, "bin/versions.json"), JSON.json(m))
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    r = run_script_y("add", "1.0.0"; env)
+    @test r.code == 1
+    @test occursin("no x86_64-linux-gnu archive for 1.0.0", r.err)
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+    # But using STABLE_BASE is fine
+    cleanup()
+    mr = fake_mirror("1.0.0")
+    m = JSON.parse(read(joinpath(mr, "bin/versions.json"), String))
+    m["1.0.0"]["files"][1]["url"] =
+        "file://$mr/bin/linux/x64/1.0/julia-1.0.0-linux-x86_64.tar.gz"
+    write(joinpath(mr, "bin/versions.json"), JSON.json(m))
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    r = run_script_y("add", "1.0.0"; env)
+    @test r.code == 0
+    @test isdir(joinpath(installdir, "julia-1.0.0"))
+end
+@testset "bad versions.json handled safely" begin
+    # A malformed or hostile manifest must fail gracefully and NEVER bypass the
+    # safety checks (GPG signature + version-binding). Each case: exit 1, nothing
+    # installed, nothing linked.
+    badenv(mr) = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    function clobber(mr, f)
+        m = JSON.parse(read(joinpath(mr, "bin/versions.json"), String))
+        f(m)
+        write(joinpath(mr, "bin/versions.json"), JSON.json(m))
+        mr
+    end
+
+    # truncated / malformed JSON: no archive matches -> clean error, no install
+    cleanup()
+    mr = fake_mirror("1.0.0")
+    write(joinpath(mr, "bin/versions.json"), "{ \"1.0.0\": { \"files\": [ {")
+    r = run_script_y("add", "1.0.0"; env=badenv(mr))
+    @test r.code == 1
+    @test occursin("no x86_64-linux-gnu archive for 1.0.0", r.err)
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+    # a url under an unknown base (neither STABLE_BASE nor the official bucket) is
+    # dropped by get_url, not blindly rebased, so no archive remains for the version
+    cleanup()
+    mr = clobber(fake_mirror("1.0.0"), m -> m["1.0.0"]["files"][1]["url"] = "https://x/elsewhere/j.tar.gz")
+    r = run_script_y("add", "1.0.0"; env=badenv(mr))
+    @test r.code == 1
+    @test occursin("no x86_64-linux-gnu archive for 1.0.0", r.err)
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+    # a path-traversal url under a known base fails the narrow /bin/... suffix check in
+    # get_url (no segment may start with '.'), so the row is dropped, not downloaded
+    cleanup()
+    mr = clobber(fake_mirror("1.0.0"),
+                 m -> m["1.0.0"]["files"][1]["url"] = "https://julialang-s3.julialang.org/bin/../../../etc/passwd")
+    r = run_script_y("add", "1.0.0"; env=badenv(mr))
+    @test r.code == 1
+    @test occursin("no x86_64-linux-gnu archive for 1.0.0", r.err)
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+    # a brace injected into a string value (an attempt to fool the leaf-object
+    # parser) must not yield a usable install: exit 1, nothing installed
+    cleanup()
+    mr = clobber(fake_mirror("1.0.0"), m -> m["1.0.0"]["files"][1]["url"] = "https://x/bin/li}nux/oops.tar.gz")
+    r = run_script_y("add", "1.0.0"; env=badenv(mr))
+    @test r.code == 1
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+    # the manifest cannot route around GPG: with verification ON, a manifest
+    # pointing at an UNSIGNED tarball (no .asc) must refuse to install
+    cleanup()
+    mr = fake_mirror("1.0.0")   # fake (unsigned) tarball, no .asc alongside
+    r = run_script_y("add", "1.0.0"; env=("INSTALL_JULIA_STABLE_URL" => "file://$mr",))
+    @test r.code == 1
+    @test occursin("refusing to install unverified", r.err)
+    @test !isdir(joinpath(installdir, "julia-1.0.0"))
+end
+@testset "load_table matches JSON.jl" begin
+    # load_table is the trust boundary that turns versions.json into the
+    # "<version> <url-suffix>" rows resolution runs on. Pit its hand-rolled
+    # tr/awk parser against a real manifest (bin/real-versions.json, the live
+    # versions.json downloaded in the mirror setup) using JSON.jl as the oracle:
+    # for every triplet/filter, the set of rows the shell emits must equal the
+    # set JSON.jl produces under the SAME documented filters.
+
+    # The same table, built independently with JSON.jl: a File is kept iff its
+    # triplet/kind/extension match and its version matches the search filter.
+    #
+    # Deliberately does NOT re-apply get_version's or get_url's shape gates (the
+    # semver/length version checks, the /bin/... suffix regex and length caps).
+    # Re-applying them would let the shell silently DROP a real build while the
+    # oracle dropped the same one, and the two would still "agree" - masking
+    # exactly the over-dropping bug this test should catch. Keeping every matching
+    # build instead makes the test assert the shell captures ALL of them. Every
+    # real url is under the official bucket, so assert that (rather than skip), so
+    # a stray host can't slip past unchecked.
+    stable_official = "https://julialang-s3.julialang.org"
+    function json_table(versions_json; triplet, filter)
+        filt = Regex(filter)
+        rows = Set{String}()
+        for (_, entry) in pairs(JSON.parsefile(versions_json))
+            for f in entry["files"]
+                get(f, "triplet", "")   == triplet   || continue
+                get(f, "kind", "")      == "archive"  || continue
+                get(f, "extension", "") == "tar.gz"   || continue
+                v = get(f, "version", "")
+                occursin(filt, v) || continue
+                url = get(f, "url", "")
+                @assert startswith(url, stable_official) "manifest url not under official bucket: $url"
+                push!(rows, "$v $(url[lastindex(stable_official)+1:end])")
+            end
+        end
+        rows
+    end
+
+    real = joinpath(mirror, "bin", "real-versions.json")
+    @test isfile(real)
+    # every unix like triplet plus filters mirroring the script's own resolution
+    # globs (any version, an X.Y prefix, an exact version)
+    for triplet in (
+                "x86_64-apple-darwin14",
+                "x86_64-w64-mingw32",
+                "i686-w64-mingw32",
+                "x86_64-linux-gnu",
+                "i686-linux-gnu",
+                "powerpc64le-linux-gnu",
+                "aarch64-linux-gnu",
+                "armv7l-linux-gnueabihf",
+                "x86_64-unknown-freebsd11.1",
+                "x86_64-linux-musl",
+                "aarch64-apple-darwin14",
+        )
+        for filter in (".", "^1\\.10\\.[0-9]+\$", "^1\\.0\\.0\$")
+            @test shell_load_table(real; triplet, filter) == json_table(real; triplet, filter)
+        end
+    end
+end
+@testset "load_table version spec filters" begin
+    # Pin, on a hand-built manifest, exactly which versions each version spec
+    # selects out of versions.json. cmd_install maps every spec to a
+    # VERSION_SEARCH_FILTER; this drives load_table with that filter and asserts
+    # the set of versions it returns. The fixture is laced with builds that must
+    # NOT show up - a different triplet, a non-archive kind, a non-tar.gz
+    # extension - so a broken triplet/kind/extension gate would be caught here too.
+
+    # spec_filter mirrors cmd_install's case arms verbatim (the spec forms that
+    # reach load_table; nightly/pr/path specs never do). reesc escapes the dots,
+    # exactly like the script's reesc().
+    reesc(s) = replace(s, "." => "\\.")
+    function spec_filter(spec)
+        if spec == "pre"                                    # greatest overall, prereleases included
+            "."
+        elseif spec == ""                                   # latest stable: plain X.Y.Z only
+            "^[0-9]+\\.[0-9]+\\.[0-9]+\$"
+        elseif occursin(r"^[0-9].*\.[0-9].*\.[0-9]", spec)  # exact full version (may carry -pre)
+            "^" * reesc(spec) * "\$"
+        elseif occursin(r"^[0-9].*\.[0-9]", spec)           # X.Y prefix: stable patch
+            "^" * reesc(spec) * "\\.[0-9]+\$"
+        elseif occursin(r"^[0-9]", spec)                    # X prefix: stable minor.patch
+            "^" * reesc(spec) * "\\.[0-9]+\\.[0-9]+\$"
+        else
+            error("spec '$spec' does not reach load_table")
+        end
+    end
+
+    # A synthetic versions.json. Most builds are x86_64 archive/tar.gz; the last
+    # three are decoys on the same 1.10 line that the x86_64 table must never include.
+    triplet = "x86_64-linux-gnu"
+    real_versions = ["1.9.9", "1.10.0", "1.10.1", "1.10.2", "1.10.3-rc1",
+                     "1.11.0-beta1", "1.11.0", "2.0.0", "2.1.0-rc1"]
+    manifest = Dict{String,Any}()
+    function addfile!(v; trip=triplet, kind="archive", ext="tar.gz")
+        e = get!(manifest, v, Dict("files" => [], "stable" => !occursin('-', v)))
+        push!(e["files"], Dict(
+            "url" => "https://julialang-s3.julialang.org/bin/linux/x64/$v/julia-$v-linux-x86_64.tar.gz",
+            "version" => v, "os" => "linux", "arch" => "x86_64",
+            "triplet" => trip, "kind" => kind, "extension" => ext))
+    end
+    for v in real_versions
+        addfile!(v)
+    end
+    addfile!("1.10.5"; trip="aarch64-linux-gnu")  # wrong triplet
+    addfile!("1.10.6"; kind="installer")          # not an archive
+    addfile!("1.10.7"; ext="zip")                 # not tar.gz
+    fixture = joinpath(mktempdir(), "versions.json")
+    write(fixture, JSON.json(manifest))
+
+    # The version each spec must pull out of the table above. The url-suffix is
+    # checked separately (load_table matches JSON.jl); here we assert the version set.
+    cases = [
+        "1.10.1"     => ["1.10.1"],                                          # exact stable
+        "1.10.3-rc1" => ["1.10.3-rc1"],                                      # exact prerelease
+        "pre"        => real_versions,                                       # everything, prereleases too
+        ""           => ["1.9.9","1.10.0","1.10.1","1.10.2","1.11.0","2.0.0"], # stable only
+        "1.10"       => ["1.10.0","1.10.1","1.10.2"],                        # X.Y, prerelease excluded
+        "1.11"       => ["1.11.0"],                                          # X.Y, -beta1 excluded
+        "1"          => ["1.9.9","1.10.0","1.10.1","1.10.2","1.11.0"],       # X, prereleases + major 2 excluded
+        "2"          => ["2.0.0"],                                           # X, -rc1 excluded
+    ]
+    for (spec, want) in cases
+        rows = shell_load_table(fixture; triplet, filter=spec_filter(spec))
+        got = Set(first(split(r, ' ')) for r in rows)
+        @test got == Set(want)
+    end
+
+    # A url-suffix spot check: the exact-version filter yields the one expected row,
+    # base stripped to the narrow /bin/... suffix.
+    @test shell_load_table(fixture; triplet, filter=spec_filter("1.11.0")) ==
+        Set(["1.11.0 /bin/linux/x64/1.11.0/julia-1.11.0-linux-x86_64.tar.gz"])
+end
+@testset "load_table limits and edge cases" begin
+    # Behavioral corners of load_table that the parsing/filter testsets don't
+    # reach: the DoS length caps, the triplet's literal (dot-escaped) matching,
+    # and the no-match case. (The input-validation branches - unset filter, bad
+    # triplet/STABLE_* - are internal asserts on caller-guaranteed invariants, so
+    # they aren't tested here.)
+
+    # Write a versions.json from a list of File dicts and return its path.
+    function manifest_of(files...)
+        m = Dict{String,Any}()
+        for f in files
+            v = f["version"]
+            e = get!(m, v, Dict("files" => [], "stable" => true))
+            push!(e["files"], f)
+        end
+        p = joinpath(mktempdir(), "versions.json")
+        write(p, JSON.json(m))
+        p
+    end
+    file(; version, url, triplet="x86_64-linux-gnu", kind="archive", ext="tar.gz") =
+        Dict("url" => url, "version" => version, "os" => "linux", "arch" => "x86_64",
+             "triplet" => triplet, "kind" => kind, "extension" => ext)
+    OFFICIAL = "https://julialang-s3.julialang.org"
+
+    # --- DoS length caps (valid-but-huge values are dropped, not emitted) ---
+    # A 256+ char version is valid semver yet must be discarded by get_version's cap;
+    # a normal sibling proves the table still loaded.
+    longver = "1.0.0-" * repeat("a", 300)
+    capped = manifest_of(
+        file(version="1.0.0", url="$OFFICIAL/bin/ok.tar.gz"),
+        file(version=longver, url="$OFFICIAL/bin/long.tar.gz"),
+    )
+    got = Set(first(split(r, ' ')) for r in shell_load_table(capped; triplet="x86_64-linux-gnu", filter="."))
+    @test got == Set(["1.0.0"])
+
+    # A url whose stripped suffix exceeds 2048 chars (but is otherwise the right
+    # shape) is dropped by get_url's cap, so that row never appears.
+    longsuffix = "/bin/" * repeat("a", 2100)
+    urlcap = manifest_of(
+        file(version="1.0.0", url="$OFFICIAL/bin/ok.tar.gz"),
+        file(version="1.0.1", url="$OFFICIAL$longsuffix"),
+    )
+    got = Set(first(split(r, ' ')) for r in shell_load_table(urlcap; triplet="x86_64-linux-gnu", filter="."))
+    @test got == Set(["1.0.0"])
+
+    # --- esc(): the triplet is matched literally, dots are NOT regex wildcards ---
+    # ARCH_TRIPLET "a.c" must match only the "a.c" build, never "axc"; without
+    # esc() the '.' would match any char and wrongly pull in "axc".
+    dotted = manifest_of(
+        file(version="5.0.0", url="$OFFICIAL/bin/a.tar.gz", triplet="a.c"),
+        file(version="6.0.0", url="$OFFICIAL/bin/b.tar.gz", triplet="axc"),
+    )
+    got = Set(first(split(r, ' ')) for r in shell_load_table(dotted; triplet="a.c", filter="."))
+    @test got == Set(["5.0.0"])
+
+    # --- empty result is a success, not an error ---
+    # A filter that matches nothing yields an empty table and exit 0 (so a no-match
+    # never aborts the caller under set -e).
+    nomatch = manifest_of(file(version="1.0.0", url="$OFFICIAL/bin/ok.tar.gz"))
+    @test isempty(shell_load_table(nomatch; triplet="x86_64-linux-gnu", filter="^9\\.9\\.9\$"))
 end

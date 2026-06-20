@@ -2,3 +2,4 @@
 /agent-depot
 /agent-logs
 .mcp.json
+.claude/

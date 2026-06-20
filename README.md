@@ -105,7 +105,7 @@ install-julia.sh 1.10~aarch64    # force ARM64
 | `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly and PR builds.                    |
 
 Stable/prerelease resolution reads `<INSTALL_JULIA_STABLE_URL>/bin/versions.json`
-to discover available versions.
+to discover available versions and to get each build's exact download URL.
 
 ## How it lays things out
 
