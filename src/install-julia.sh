@@ -1164,7 +1164,6 @@ main() {
 	need curl
 	need tar
 	need mktemp
-	need readlink
 	[ "$NO_VERIFY" = 1 ] || { GPGV=$(gpgv_bin) || die "required command not found: ${INSTALL_JULIA_GPGV:-gpgv (or gpgv2)}"; need base64; }
 
 	case "$_cmd" in
