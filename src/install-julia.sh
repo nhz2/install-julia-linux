@@ -13,7 +13,9 @@
 
 set -eu
 
-SELF_VERSION="0.2.0"
+export LC_ALL=C
+
+SELF_VERSION="0.2.1-dev"
 
 # --------------------------------------------------------------------------- #
 # Configuration                                                               #
@@ -23,9 +25,14 @@ INSTALL_DIR=${INSTALL_JULIA_INSTALL_DIR:-"$HOME/packages/julias"}
 SYMLINK_DIR=${INSTALL_JULIA_SYMLINK_DIR:-"$HOME/.local/bin"}
 NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
 
+# The canonical bucket the manifest's download urls are written against. A mirror
+# may serve versions.json (from STABLE_BASE) while the urls inside still point here;
+# we accept a url under either base and re-root it on STABLE_BASE for the download.
+STABLE_OFFICIAL="https://julialang-s3.julialang.org"
+
 # Service endpoints. All overridable via the environment so the script can be
 # pointed at a mirror or a private cache. Trailing slashes are stripped.
-STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"https://julialang-s3.julialang.org"}
+STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"$STABLE_OFFICIAL"}
 NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.julialang.org"}
 STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
 
@@ -96,9 +103,21 @@ R_URL=""       # tarball download URL
 R_ROLLUP=0     # 1 if this is a plain stable release eligible for X.Y / X rollups
 
 # Detected/overridden architecture (see arch_setup):
-ARCH_STABLE=""   # stable bucket dir: x64 | x86 | aarch64 (raw token if unrecognized)
-ARCH_FILE=""     # filename arch:     x86_64 | i686 | aarch64 (raw token if unrecognized)
+ARCH_FILE=""     # nightly-bucket dir / filename arch: x86_64 | i686 | aarch64 (raw token if unrecognized)
+ARCH_TRIPLET=""  # the versions.json `triplet` we match stable builds on: x86_64-linux-gnu, ...
 ARCH_SUFFIX=""   # "~<arch>" tag appended to the label when ~arch was given ("" if autodetected)
+
+# Cached "<version> <url-suffix>" table for ARCH_TRIPLET, extracted by load_table. The
+# suffix is the manifest url with its (trusted) base stripped, ready to be re-rooted
+# onto STABLE_BASE. The cached table is reused without re-fetching: a prefix spec reads
+# it twice (find the greatest compatible version, then look up that version's url), an
+# exact version reads it once.
+VERSION_URL_TABLE=""
+
+# AWK regex the version must match to be added to VERSION_URL_TABLE. Each caller of
+# load_table sets it to narrow the table to the line it cares about (an exact
+# version, a prefix, or "." for "any"); load_table refuses to run if it is unset.
+VERSION_SEARCH_FILTER=""
 
 # --------------------------------------------------------------------------- #
 # Output helpers                                                              #
@@ -136,7 +155,7 @@ need() { have "$1" || die "required command not found: $1"; }
 
 # http_get URL -> body on stdout; nonzero on HTTP/transport error.
 # --max-filesize caps a hostile endless response; 100M >> the versions.json
-http_get() { curl -fsSL --retry 3 --max-filesize 100M "$1"; }
+http_get() { curl -fL --retry 3 --progress-bar --max-filesize 100M "$1"; }
 
 # http_download URL DEST. --max-filesize caps it; 3G >> any build.
 http_download() { curl -fL --retry 3 --progress-bar --max-filesize 3G -o "$2" "$1"; }
@@ -170,10 +189,13 @@ is_alphanumdashdot() {
 }
 
 # allowed characters for script version spec
-# MUST NOT include path separators
+# MUST NOT include path separators.
+# '+' is excluded on purpose: build metadata is unsupported (is_version rejects it) so
+# a '+' is never legitimate in a spec, and reesc only escapes '.', so leaving '+' in
+# would let it through unescaped into the search filter as an ERE quantifier.
 is_versionspecchars() {
 	case "$1" in
-		*[!0-9A-Za-z.~_+-]*) return 1 ;;     # any char outside the set
+		*[!0-9A-Za-z.~_-]*) return 1 ;;     # any char outside the set
 		*) return 0 ;;
 	esac
 }
@@ -317,20 +339,30 @@ version_max() {
 # Architecture                                                                #
 # --------------------------------------------------------------------------- #
 
-# arch_setup override; resolve an arch alias straight to its bucket names. The
-# stable bucket dir (x64/x86) differs from ARCH_FILE - the filename arch, which is
-# also the nightlies-bucket dir (x86_64/i686) - so each known arch sets both. An
-# UNRECOGNIZED arch is passed through verbatim for both: we can't predict the aliases
-# a future Julia arch will use, so we assume one uniform name and let the download
-# 404 if that guess is wrong, rather than rejecting a newly-shipped arch outright
-# (it then works automatically, or via ~arch, with no script update).
+# arch_setup override; resolve an arch alias to the two names we need. ARCH_FILE is
+# the filename arch (also the nightlies-bucket dir); ARCH_TRIPLET is the value Julia
+# puts in versions.json's `triplet` field, which is how we pick the stable build -
+# a full triplet is unambiguous (it tells gnu from musl). An UNRECOGNIZED arch is
+# passed through, guessing the conventional <arch>-linux-gnu triplet: we can't
+# predict a future Julia arch's names, so rather than reject a newly-shipped arch we
+# assume the usual pattern and let discovery come up empty if the guess is wrong (it
+# then works automatically, or via ~arch, with no script update).
+#
+# The accepted `uname -m` spellings (and the cputype each normalizes to) follow
+# rustup's get_architecture:
+# https://github.com/rust-lang/rustup/blob/1.29.0/rustup-init.sh
 arch_setup() {
 	_arch_uname=${1:-$(uname -m)}
 	case "$_arch_uname" in
-		x86_64 | x64) ARCH_STABLE=x64;           ARCH_FILE=x86_64 ;;
-		i686 | x86)   ARCH_STABLE=x86;           ARCH_FILE=i686 ;;
-		aarch64)      ARCH_STABLE=aarch64;       ARCH_FILE=aarch64 ;;
-		*)            ARCH_STABLE=$_arch_uname;  ARCH_FILE=$_arch_uname ;;
+		x86_64 | x86-64 | x64 | amd64)  ARCH_FILE=x86_64;      ARCH_TRIPLET=x86_64-linux-gnu ;;
+		i386 | i486 | i686 | i786 | x86) ARCH_FILE=i686;       ARCH_TRIPLET=i686-linux-gnu ;;
+		aarch64 | arm64)                ARCH_FILE=aarch64;     ARCH_TRIPLET=aarch64-linux-gnu ;;
+		armv7l | armv8l)                ARCH_FILE=armv7l;      ARCH_TRIPLET=armv7l-linux-gnueabihf ;;
+		ppc64le | powerpc64le)          ARCH_FILE=powerpc64le; ARCH_TRIPLET=powerpc64le-linux-gnu ;;
+		*)                              ARCH_FILE=$_arch_uname; ARCH_TRIPLET="$_arch_uname-linux-gnu" ;;
+	esac
+	case "$ARCH_TRIPLET" in "" | *[!A-Za-z0-9_.-]*)
+		die "bad triplet '$ARCH_TRIPLET' (triplet must be one or more of A-Za-z0-9_.-)" ;;
 	esac
 }
 
@@ -341,70 +373,144 @@ arch_setup() {
 # Escape regex metacharacters (dots) in a version prefix.
 reesc() { printf '%s' "$1" | sed 's/\./\\./g'; }
 
-# stable_versions include_prereleases -> every full version with a Linux build for this arch, one per
-# line (e.g. 1.12.6 / 1.13.0-rc1). Read from the published release manifest at
-# <STABLE_BASE>/bin/versions.json
-# We don't parse the JSON - we just pull the tarball filenames out of it; each
-# embeds its exact version, which inherently keeps only builds that exist for
-# ARCH_FILE. Captured before parsing (see http_get) so a network error
-# aborts instead of masquerading as "no such version".
-stable_versions() {
-	_json=$(http_get "$STABLE_BASE/bin/versions.json") ||
+# load_table: fetch versions.json and extract the "<version> <url-suffix>" rows whose
+# `triplet` is ARCH_TRIPLET and whose version matches VERSION_SEARCH_FILTER into
+# VERSION_URL_TABLE.
+#
+# This is the trust boundary for download urls: get_url strips a KNOWN base (the
+# user-configured STABLE_BASE, or the canonical STABLE_OFFICIAL bucket) off each url
+# and emits only the remaining suffix, which must match the narrow, traversal-free
+# /bin/... form. A url under neither base, or whose suffix is not that shape, is
+# dropped - so by the time resolve_stable_full re-roots a suffix onto STABLE_BASE there
+# is nothing left to re-validate. STABLE_BASE may carry unusual characters (user
+# flexibility) and is matched literally with index(); the suffix is the restricted,
+# less-trusted part.
+#
+# Parsing leans on the published schema (bin/versions-schema.json): a File is a flat
+# leaf object (its braces never nest) and no string value contains a brace, so
+# splitting on "}" yields zero or one File per record. We strip newlines/CRs first so
+# a key is never separated from its value by one to avoid confusing the awk regex.
+load_table() {
+	# Require input variables to be defined
+	[ -z "$VERSION_SEARCH_FILTER" ] && die "assertion failed, VERSION_SEARCH_FILTER not defined"
+	case "$ARCH_TRIPLET" in "" | *[!A-Za-z0-9_.-]*)
+		die "bad triplet '$ARCH_TRIPLET' (triplet must be one or more of A-Za-z0-9_.-)" ;;
+	esac
+	case "$STABLE_BASE" in
+		'') die "STABLE_BASE URL empty" ;;
+		*[!A-Za-z0-9._:/-]*) die "STABLE_BASE: '$STABLE_BASE' has unexpected characters outside of A-Za-z0-9._:/-" ;;
+		*) : ;;
+	esac
+	case "$STABLE_OFFICIAL" in
+		'') die "STABLE_OFFICIAL URL empty" ;;
+		*[!A-Za-z0-9._:/-]*) die "STABLE_OFFICIAL: $STABLE_OFFICIAL has unexpected characters outside of A-Za-z0-9._:/-" ;;
+		*) : ;;
+	esac
+	# Its own line so we get a nice error message if there is a network issue
+	info "Downloading versions manifest from $STABLE_BASE/bin/versions.json"
+	_TABLE_JSON_MANIFEST=$(http_get "$STABLE_BASE/bin/versions.json") ||
 		die "could not fetch $STABLE_BASE/bin/versions.json (network/HTTP error)"
-	# Break the JSON on quotes and slashes so every string token and path component
-	# lands on its own line, then strip the bare tarball filenames to their version.
-	# (POSIX sed can't emit multiple matches per line the way GNU `grep -o` can, so
-	# tr - which is POSIX - does the splitting first.) The leading [0-9] keeps this
-	# to concrete releases and skips any rolling "julia-latest-..." pointer.
-	# Keep only versions is_version can parse: version_max dies on anything it
-	# can't compare, so one weird manifest entry (e.g. a future +build suffix)
-	# would otherwise break every discovery spec. Skip-and-warn instead.
-	printf '%s\n' "$_json" |
-		tr '"/' '\n\n' |
-		sed -n "s/^julia-\\([0-9].*\\)-linux-$ARCH_FILE\\.tar\\.gz\$/\\1/p" |
-		sort -u |
-		while IFS= read -r _sv; do
-			if is_version "$_sv"; then
-				if [ "$1" = 1 ]; then
-					printf '%s\n' "$_sv"
-				elif ! has_dash "$_sv"; then
-					printf '%s\n' "$_sv"
-				fi
-			else
-				warn "ignoring unparseable version '$_sv' in versions.json"
-			fi
-		done
+	VERSION_URL_TABLE=$(
+		printf '%s' "$_TABLE_JSON_MANIFEST" |
+		tr -d '\n\r' |
+		STABLE_OFFICIAL="$STABLE_OFFICIAL" STABLE_BASE="$STABLE_BASE" VERSION_SEARCH_FILTER="$VERSION_SEARCH_FILTER" awk -v triplet="$ARCH_TRIPLET" -v RS="}" '
+	BEGIN {
+		stable_official = ENVIRON["STABLE_OFFICIAL"]
+		stable_base = ENVIRON["STABLE_BASE"]
+		v_filter = ENVIRON["VERSION_SEARCH_FILTER"]
+	}
+	function esc(s){ gsub(/\./, "\\.", s); return s }
+	function get_version(o,  matched) {
+		if (match(o, /"version"[ \t]*:[ \t]*"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?"/)) {
+			# extract the k : v
+			matched = substr(o, RSTART, RLENGTH)
+			# extract the v unquoted
+			match(matched, /"[0-9][0-9A-Za-z.-]*"/)
+			matched = substr(matched, RSTART+1, RLENGTH-2)
+			if (length(matched) > 256) return ""
+			if (matched ~ v_filter) {
+				got_version = matched # global variable got_version
+				return matched
+			}
+		}
+		return ""
+	}
+	function get_url(o,  matched,q) {
+		if (match(o, /"url"[ \t]*:[ \t]*"[A-Za-z0-9._:\/-]+"/)) {
+			# extract the k : v
+			matched = substr(o, RSTART, RLENGTH)
+			# extract the v unquoted
+			q = length(matched)
+			match(matched, /^"url"[ \t]*:[ \t]*"/)
+			matched = substr(matched, RSTART+RLENGTH, q-RLENGTH-1)
+			# strip prefix, use index to avoid regex escaping issues
+			# return empty if no prefix
+			if (index(matched, stable_official) == 1) {
+				matched = substr(matched, length(stable_official)+1)
+			} else if (index(matched, stable_base) == 1) {
+				matched = substr(matched, length(stable_base)+1)
+			} else {
+				return ""
+			}
+			# No url funny business
+			if (length(matched) > 2048) return ""
+			if (matched ~ /^\/bin(\/[a-z0-9_]([a-z0-9_.-]*[a-z0-9_-])?)+$/) {
+				got_url = matched # global variable got_url
+				return matched
+			}
+		}
+		return ""
+	}
+	/"extension"[ \t]*:[ \t]*"tar\.gz"/ &&
+	/"kind"[ \t]*:[ \t]*"archive"/ &&
+	$0 ~ ("\"triplet\"[ \t]*:[ \t]*\"" esc(triplet) "\"") &&
+	get_version($0) && get_url($0) {
+		print got_version " " got_url # globals set in get_version and get_url
+	}'
+	)
 }
 
-# pick_latest PREFIX INCLUDE_PRERELEASES -> greatest matching full version ("" if none).
-#   PREFIX: "" (any) | major (1) | major.minor (1.12)
-#   STABLE_ONLY=1 excludes prereleases (rc/beta/alpha).
+# manifest_select -> the cached "<version> <url-suffix>" table, one row per installable
+# build for ARCH_TRIPLET matching VERSION_SEARCH_FILTER. Callers MUST run load_table
+# first (on its own line, so a fetch error is not swallowed inside their pipeline).
+# Empty table prints nothing.
+manifest_select() {
+	[ -n "$VERSION_URL_TABLE" ] || return 0
+	printf '%s\n' "$VERSION_URL_TABLE"
+}
+
+# pick_latest -> greatest version in the loaded table ("" if none). VERSION_SEARCH_FILTER
+# (set before load_table) has already narrowed the table to the wanted version line -
+# prereleases included or excluded - and get_version validated every row as semver, so
+# this just takes the max (version_max scans every line, so duplicate rows are harmless).
+#
+# version_max returns success with empty output for empty input, so the no-match case
+# doesn't return a nonzero status that, under set -e, would abort the
+# `_full=$(pick_latest)` assignment before the caller's own `[ -n "$_full" ]` guard
+# could emit a helpful message.
 pick_latest() {
-	_prefix=$1
-	# Assigned on its own line (see http_get) so stable_versions' die isn't swallowed.
-	_cands=$(stable_versions "$2")
-	[ -n "$_prefix" ] &&
-		_cands=$(printf '%s\n' "$_cands" | grep -E "^$(reesc "$_prefix")(\.|$)" || true)
-	# version_max returns success with empty output for empty input, so the
-	# no-match case doesn't return a nonzero status that, under set -e, would abort
-	# the `_full=$(pick_latest ...)` assignment before the caller's own
-	# `[ -n "$_full" ]` guard could emit a helpful message.
-	printf '%s\n' "$_cands" | grep -v '^$' | version_max
+	manifest_select | awk '{ print $1 }' | version_max
 }
 
 # --------------------------------------------------------------------------- #
 # Spec parsing & resolution                                                   #
 # --------------------------------------------------------------------------- #
 
-# Build the stable download URL for a known full version (e.g. 1.12.6).
+# Resolve the stable download URL for a known full version (e.g. 1.12.6) by looking
+# it up in the manifest, NOT by constructing the path - so a bucket reorg under
+# /bin/ needs no script edit.
 resolve_stable_full() {
 	_full=$1
-	[ -n "$_full" ] || die "no stable release matching '$_spec' for $ARCH_FILE"
+	[ -n "$_full" ] || die "no stable release matching '$_spec' for $ARCH_TRIPLET"
 	is_version "$_full" || die "$_full is not a valid version"
-	_full_core=${_full%%-*}
-	_minor=${_full_core%.*}
+	# Take the url-suffix of the row whose version equals _full exactly. The suffix
+	# already passed load_table's trust gate (known base stripped, narrow /bin/... shape),
+	# so just re-root it onto STABLE_BASE to honor a mirror without trusting the manifest
+	# host. get_url guarantees a non-empty suffix, so empty means no matching row.
+	_resolve_stable_full_suffix=$(manifest_select | awk -v v="$_full" '$1 == v { print $2; exit }')
+	[ -n "$_resolve_stable_full_suffix" ] || die "no $ARCH_TRIPLET archive for $_full in versions.json"
+	R_URL="$STABLE_BASE$_resolve_stable_full_suffix"
 	R_KIND=release
-	R_URL="$STABLE_BASE/bin/linux/$ARCH_STABLE/$_minor/julia-$_full-linux-$ARCH_FILE.tar.gz"
 	# Plain X.Y.Z (no prerelease tag) participates in rollup symlinks.
 	if has_dash "$_full" ; then
 		R_ROLLUP=0
@@ -433,6 +539,7 @@ verify_sig() {
 	fi
 
 	_asc="$_file.asc"
+	info "Downloading signature from $R_URL.asc"
 	http_get "$R_URL.asc" >"$_asc" ||
 		die "could not download signature from $R_URL.asc (refusing to install unverified)"
 
@@ -642,7 +749,22 @@ cmd_install() {
 		*)     ARCH_SUFFIX=""; arch_setup "";;
 	esac
 
-	case "$_spec" in
+	# Fast path: a stable build is immutable, so if this exact version is already
+	# installed (and we are not reinstalling) the resolved label is that same build -
+	# set R_* directly and skip the case's versions.json fetch. Only a valid full
+	# version qualifies; prefix/pre/nightly/pr specs fall through to resolve below.
+	# _installed pins the already-installed branch below, so even if the dir is
+	# removed from under us we re-link (or no-op) rather than dying on the empty
+	# R_URL we never resolved (we are not reinstalling, so there is nothing to fetch).
+	_installed=0
+	if is_version "$_spec" && [ -d "$INSTALL_DIR/julia-$_spec$ARCH_SUFFIX" ] && [ "$REINSTALL" != 1 ]; then
+		R_KIND=release; R_LABEL="$_spec"
+		if has_dash "$_spec"; then R_ROLLUP=0; else R_ROLLUP=1; fi
+		_installed=1
+	fi
+
+	# Resolve anything the fast path did not already settle (R_KIND still empty).
+	[ -n "$R_KIND" ] || case "$_spec" in
 		nightly)
 			R_KIND=nightly
 			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-latest-linux-$ARCH_FILE.tar.gz"
@@ -656,18 +778,46 @@ cmd_install() {
 			R_ROLLUP=0 ;;
 		pr[0-9]*)
 			# Require the whole tail to be digits (the glob only pins the first)
-			is_digits ${_spec#pr} || die "bad pr spec: $_spec (expected pr<number>)"
+			is_digits "${_spec#pr}" || die "bad pr spec: $_spec (expected pr<number>)"
 			R_KIND='pr'
 			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-$_spec-linux-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
-		[0-9]*.[0-9]*.[0-9]*)
-			resolve_stable_full "$_spec" ;;
 		pre)
-			# Greatest version overall, prereleases included.
-			_full=$(pick_latest "" 1); resolve_stable_full "$_full" ;;
-		"" | [0-9]* | [0-9]*.[0-9]*)
-			_full=$(pick_latest "$_spec" 0)
+			# Greatest version overall, prereleases included: every version matches.
+			VERSION_SEARCH_FILTER="."
+			load_table
+			_full=$(pick_latest)
+			resolve_stable_full "$_full" ;;
+		"")
+			# Latest stable: any plain X.Y.Z, prereleases excluded ('-' can't match [0-9]+).
+			VERSION_SEARCH_FILTER='^[0-9]+\.[0-9]+\.[0-9]+$'
+			load_table
+			_full=$(pick_latest)
+			resolve_stable_full "$_full" ;;
+		[0-9]*.[0-9]*.[0-9]*)
+			# Exact full version (may carry a prerelease tag): match it and nothing else.
+			is_version "$_spec" || die "$_spec is not a valid version"
+			VERSION_SEARCH_FILTER="^$(reesc "$_spec")\$"
+			load_table
+			resolve_stable_full "$_spec" ;;
+		# Numeric version prefix at most one period and digits
+		*[!0-9.]* | *.*.*)
+			die "unrecognized version specifier: $_spec" ;;
+		[0-9]*.[0-9]*)
+			# major.minor prefix (X.Y): greatest stable patch, prereleases excluded.
+			is_numsegment "${_spec#*.}" || die "unrecognized version specifier: $_spec"
+			is_numsegment "${_spec%.*}" || die "unrecognized version specifier: $_spec"
+			VERSION_SEARCH_FILTER="^$(reesc "$_spec")\\.[0-9]+\$"
+			load_table
+			_full=$(pick_latest)
+			resolve_stable_full "$_full" ;;
+		[0-9]*)
+			# major prefix (X): greatest stable minor.patch, prereleases excluded.
+			is_numsegment "$_spec" || die "unrecognized version specifier: $_spec"
+			VERSION_SEARCH_FILTER="^$(reesc "$_spec")\\.[0-9]+\\.[0-9]+\$"
+			load_table
+			_full=$(pick_latest)
 			resolve_stable_full "$_full" ;;
 		*)
 			die "unrecognized version specifier: $_spec" ;;
@@ -679,7 +829,6 @@ cmd_install() {
 		R_LABEL="$R_LABEL$ARCH_SUFFIX"
 		R_ROLLUP=0
 	fi
-	[ -n "$R_URL" ] || die "could not resolve a download URL for '$1'"
 
 	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
 	_destname="julia-$R_LABEL"
@@ -691,7 +840,7 @@ cmd_install() {
 	# --reinstall, and rolling nightly/pr builds (which refresh to the newest build
 	# behind their label - the whole point of re-running them), take the full
 	# download-verify-swap path below.
-	if [ -d "$INSTALL_DIR/$_destname" ] && [ "$R_KIND" = release ] && [ "$REINSTALL" != 1 ]; then
+	if [ "$_installed" = 1 ] || { [ -d "$INSTALL_DIR/$_destname" ] && [ "$R_KIND" = release ] && [ "$REINSTALL" != 1 ]; }; then
 		if [ "$_setdefault" = 1 ]; then
 			_prompt="$R_LABEL is already installed; make it the default and refresh its symlinks in $SYMLINK_DIR? (pass --reinstall to re-download and replace the build)"
 		else
@@ -701,6 +850,8 @@ cmd_install() {
 			info "Aborted."; exit 0
 		fi
 	else
+		# Only the download path needs a resolved URL (the fast path leaves it empty).
+		[ -n "$R_URL" ] || die "could not resolve a download URL for '$1'"
 		_prompt="Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"
 		if [ -d "$INSTALL_DIR/$_destname" ]; then
 			if [ "$R_KIND" = release ]; then
@@ -749,6 +900,10 @@ cmd_switch() {
 			info "Default 'julia' now points to $_abs"
 			return 0 ;;
 	esac
+	# Reject bad characters before the prefix is interpolated into `grep -E` below:
+	# reesc only escapes '.', so an unescaped ERE metacharacter ('+', '*', '[', ...)
+	# would otherwise be interpreted there (e.g. `switch 1+` silently matching 11.0.0).
+	is_versionspecchars "$_target" || die "bad version specifier: $_target"
 	# Resolve an installed version from a partial id;
 	if [ -d "$INSTALL_DIR/julia-$_target" ]; then
 		# exact match first
