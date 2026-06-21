@@ -1,0 +1,27 @@
+name: Old bash syntax check
+
+# Parse-check the install script with bash 3.2.57 - the version shipped as
+# /bin/bash (and /bin/sh) on macOS. Old bash has parser bugs that newer bash
+# and ShellCheck accept silently, e.g. a `case` statement inside `$( ... )`
+# whose pattern-closing `)` is mistaken for the end of the command substitution.
+# `bash -n` parses without executing, which is the stage where such bugs surface.
+# The official bash image is pinned to the exact 3.2.57 release.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  old-bash-syntax:
+    name: bash 3.2.57 syntax check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Parse-check install script with bash 3.2.57
+        run: |
+          docker run --rm -v "$PWD/src:/src:ro" bash:3.2.57 bash --version
+          docker run --rm -v "$PWD/src:/src:ro" bash:3.2.57 bash -n /src/install-julia.sh
