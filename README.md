@@ -7,7 +7,7 @@ binaries, verifies them with a bundled GPG key, unpacks them,
 and keeps a tidy set of `julia`, `julia-X`, `julia-X.Y`, `julia-X.Y.Z`
 symlinks on your `PATH`.
 
-Runtime dependencies: `curl`, `gpgv` (or `gpgv2`), `tar`, `mktemp`, `base64`, and `readlink`
+Runtime dependencies: `curl`, `gpgv` (or `gpgv2`), `tar`, `mktemp`, and `base64`
 
 ## One line install of the latest version of Julia
 
