@@ -706,8 +706,8 @@ match_installed() {
 				while IFS= read -r _id; do
 					case "${_id}" in
 						# some problematic characters are filtered
-						*[!0-9A-Za-z.~_+-]*) : ;;
-						"julia-${1}" | "julia-${1}"[.~-]*) printf '%s\n' "$_id" ;;
+						(*[!0-9A-Za-z.~_+-]*) : ;;
+						("julia-${1}" | "julia-${1}"[.~-]*) printf '%s\n' "$_id" ;;
 					esac
 				done)
 			[ -n "$_hits" ] && { printf '%s\n' "$_hits"; return 0; } ;;
