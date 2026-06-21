@@ -24,6 +24,7 @@ SELF_VERSION="0.2.1-dev"
 INSTALL_DIR=${INSTALL_JULIA_INSTALL_DIR:-"$HOME/packages/julias"}
 SYMLINK_DIR=${INSTALL_JULIA_SYMLINK_DIR:-"$HOME/.local/bin"}
 NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
+GPGV=${INSTALL_JULIA_GPGV:-}   # verifier command; empty autodetects using gpgv_bin defined below
 
 # The canonical bucket the manifest's download urls are written against. A mirror
 # may serve versions.json (from STABLE_BASE) while the urls inside still point here;
@@ -152,6 +153,17 @@ confirm() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 need() { have "$1" || die "required command not found: $1"; }
+
+# gpgv_bin: print the verifier to use - $GPGV if set (the INSTALL_JULIA_GPGV
+# override). All must share the `--keyring KEYRING SIG FILE`
+# interface. Nonzero if the chosen command is missing.
+gpgv_bin() {
+	if   [ -n "$GPGV" ]; then have "$GPGV" && printf '%s\n' "$GPGV"
+	elif have gpgv;  then printf 'gpgv\n'
+	elif have gpgv2; then printf 'gpgv2\n'
+	else return 1
+	fi
+}
 
 # http_get URL -> body on stdout; nonzero on HTTP/transport error.
 # --max-filesize caps a hostile endless response; 100M >> the versions.json
@@ -546,7 +558,7 @@ verify_sig() {
 	_keyring="$_file.keyring"
 	julia_keyring >"$_keyring" || die "could not materialize signing keyring"
 
-	gpgv --keyring "$_keyring" "$_asc" "$_file" >/dev/null ||
+	"$GPGV" --keyring "$_keyring" "$_asc" "$_file" >/dev/null ||
 		die "signature verification FAILED for $(basename "$_file") - refusing to install"
 }
 
@@ -1113,6 +1125,8 @@ Environment variables:
                               (default: ~/.local/bin)
   INSTALL_JULIA_NO_VERIFY     set to 1 to skip GPG verification
                               (default: 0)
+  INSTALL_JULIA_GPGV          force a specific signature-verification command
+                              (default: autodetect gpgv/gpgv2)
   INSTALL_JULIA_STABLE_URL    base for stable/prerelease binaries
                               (default: https://julialang-s3.julialang.org)
   INSTALL_JULIA_NIGHTLY_URL   base for nightly and PR builds
@@ -1144,13 +1158,14 @@ main() {
 	done
 
 	# Check every hard dependency up front, before any command runs, so a missing
-	# tool surfaces immediately instead of partway through an operation. gpgv/base64
-	# are needed only when signature verification is on (the default).
+	# tool surfaces immediately instead of partway through an operation.
+	# A verifier and base64 are needed only
+	# when verification is on (the default); the chosen verifier is cached in GPGV.
 	need curl
 	need tar
 	need mktemp
 	need readlink
-	[ "$NO_VERIFY" = 1 ] || { need gpgv; need base64; }
+	[ "$NO_VERIFY" = 1 ] || { GPGV=$(gpgv_bin) || die "required command not found: ${INSTALL_JULIA_GPGV:-gpgv (or gpgv2)}"; need base64; }
 
 	case "$_cmd" in
 		add)

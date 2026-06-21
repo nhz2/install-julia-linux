@@ -7,7 +7,7 @@ binaries, verifies them with a bundled GPG key, unpacks them,
 and keeps a tidy set of `julia`, `julia-X`, `julia-X.Y`, `julia-X.Y.Z`
 symlinks on your `PATH`.
 
-Runtime dependencies: `curl`, `tar`, `mktemp`, `gpgv`, `base64`, and `readlink`
+Runtime dependencies: `curl`, `gpgv` (or `gpgv2`), `tar`, `mktemp`, `base64`, and `readlink`
 
 ## One line install of the latest version of Julia
 
@@ -101,6 +101,7 @@ install-julia.sh 1.10~aarch64    # force ARM64
 | `INSTALL_JULIA_INSTALL_DIR`  | `~/packages/julias`                           | Where versions are unpacked.                       |
 | `INSTALL_JULIA_SYMLINK_DIR`  | `~/.local/bin`                                | Where symlinks are created.                        |
 | `INSTALL_JULIA_NO_VERIFY`    | `0`                                           | Set to `1` to skip GPG verification.               |
+| `INSTALL_JULIA_GPGV`         | autodetect `gpgv`/`gpgv2`                     | Force a specific signature-verification command.   |
 | `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`          | Base for stable/prerelease binaries.               |
 | `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly and PR builds.                    |
 
