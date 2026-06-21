@@ -1125,6 +1125,8 @@ Environment variables:
                               (default: ~/.local/bin)
   INSTALL_JULIA_NO_VERIFY     set to 1 to skip GPG verification
                               (default: 0)
+  INSTALL_JULIA_GPGV          force a specific signature-verification command
+                              (default: autodetect gpgv/gpgv2)
   INSTALL_JULIA_STABLE_URL    base for stable/prerelease binaries
                               (default: https://julialang-s3.julialang.org)
   INSTALL_JULIA_NIGHTLY_URL   base for nightly and PR builds

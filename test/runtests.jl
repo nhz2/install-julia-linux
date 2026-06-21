@@ -177,6 +177,13 @@ end
     @test r.code == 0
     @test startswith(r.out, "Usage: install-julia.sh [options] [command] [version]")
 
+    # the INSTALL_JULIA_* env vars in the README and in --help must match exactly,
+    # so the two can't drift apart in either direction
+    findenvvars(s) = Set(m.match for m in eachmatch(r"INSTALL_JULIA_[A-Z0-9_]+", s))
+    readmevars = findenvvars(read(joinpath(dirname(@__DIR__), "README.md"), String))
+    @test !isempty(readmevars)
+    @test readmevars == findenvvars(run_script("--help").out)
+
     r = run_script("--hel")
     @test r.code == 1
     @test r.err == "error: unknown option: --hel (try --help)\n"
