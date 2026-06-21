@@ -2,6 +2,7 @@
 ChunkCodecLibZlib = "4c0bbee4-addc-4d73-81a0-b6caacae83c8"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 Expect = "6a31a4e8-6e70-5a2d-b005-bc2d500d80a5"
+GnuPG_jll = "1522389b-45f8-5faa-af4d-a301b79c50ac"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 ShellCheck_jll = "8b3d8500-0e58-5946-a977-e3dcde120a46"
 Tar = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
