@@ -41,7 +41,6 @@ install-julia.sh add 1.10              # install 1.10.x without changing the def
 install-julia.sh add nightly           # add the master nightly
 install-julia.sh add pre               # add the latest prerelease or stable
 install-julia.sh switch 1.10           # make 1.10.x the default julia
-install-julia.sh switch ~/build/julia/usr/bin/julia   # point julia at a custom build
 install-julia.sh remove 1.10           # delete all 1.10.*
 install-julia.sh list                  # show what's installed
 ```
@@ -167,6 +166,16 @@ switches the default), after a confirmation prompt that says so. Pass `--reinsta
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
 Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
 label.
+
+### Uninstallation
+
+Use `install-julia.sh remove <version>` to delete a single version along with
+its symlinks. To uninstall
+everything, delete the install directory (`INSTALL_JULIA_INSTALL_DIR`, default
+`~/packages/julias`) and remove the `julia*` symlinks from the symlink
+directory (`INSTALL_JULIA_SYMLINK_DIR`, default `~/.local/bin`). Also delete the
+`install-julia.sh` script itself if you installed it (e.g. `~/.local/bin/install-julia.sh`).
+If you would also like to remove your packages and other configuration, remove `~/.julia`.
 
 ## Verification
 

@@ -24,7 +24,7 @@ SELF_VERSION="0.2.1-dev"
 INSTALL_DIR=${INSTALL_JULIA_INSTALL_DIR:-"$HOME/packages/julias"}
 SYMLINK_DIR=${INSTALL_JULIA_SYMLINK_DIR:-"$HOME/.local/bin"}
 NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
-GPGV=${INSTALL_JULIA_GPGV:-}   # verifier command; empty autodetects using gpgv_bin defined below
+GPGV=${INSTALL_JULIA_GPGV:-}   # verifier command; empty autodetects gpgv or substitute in main
 TRIPLET_OVERRIDE=${INSTALL_JULIA_TRIPLET:-}   # target triplet; empty autodetects from uname (arch_setup)
 
 # The canonical bucket the manifest's download urls are written against. A mirror
@@ -155,17 +155,6 @@ confirm() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 need() { have "$1" || die "required command not found: $1"; }
-
-# gpgv_bin: print the verifier to use - $GPGV if set (the INSTALL_JULIA_GPGV
-# override). All must share the `--keyring KEYRING SIG FILE`
-# interface. Nonzero if the chosen command is missing.
-gpgv_bin() {
-	if   [ -n "$GPGV" ]; then have "$GPGV" && printf '%s\n' "$GPGV"
-	elif have gpgv;  then printf 'gpgv\n'
-	elif have gpgv2; then printf 'gpgv2\n'
-	else return 1
-	fi
-}
 
 # http_get URL -> body on stdout; nonzero on HTTP/transport error.
 # --max-filesize caps a hostile endless response; 100M >> the versions.json
@@ -1253,7 +1242,35 @@ main() {
 	need curl
 	need tar
 	need mktemp
-	[ "$NO_VERIFY" = 1 ] || { GPGV=$(gpgv_bin) || die "required command not found: ${INSTALL_JULIA_GPGV:-gpgv (or gpgv2)}"; need base64; }
+	if [ "$NO_VERIFY" != 1 ]; then
+		# Resolve the GPG signature verifier: the INSTALL_JULIA_GPGV override if
+		# set, otherwise gpgv or gpgv2 from PATH (all share the
+		# `--keyring KEYRING SIG FILE` interface).
+		if [ -n "$GPGV" ]; then
+			# The user pointed INSTALL_JULIA_GPGV at this command; if it isn't
+			# there, name it so they can fix the override rather than the
+			# generic hint.
+			have "$GPGV" || die "required command not found: $GPGV (set via INSTALL_JULIA_GPGV)"
+		elif have gpgv; then
+			GPGV=gpgv
+		elif have gpgv2; then
+			GPGV=gpgv2
+		else
+			# gpgv ships as part of GnuPG; on macOS and FreeBSD it is usually not
+			# installed by default, and the package that provides it is `gnupg`,
+			# not `gpgv` - the most common point of confusion - so spell out the
+			# per-platform install command rather than just naming the binary.
+			printf '%s\n' \
+				'error: no signature verifier found (need gpgv or gpgv2)' \
+				'Julia binaries are verified with GPG; install GnuPG to get a verifier:' \
+				'  macOS (Homebrew):  brew install gnupg' \
+				'  FreeBSD:           pkg install gnupg' \
+				'Already have one elsewhere? Point at it with INSTALL_JULIA_GPGV=/path/to/gpgv' \
+				'Or skip verification (NOT recommended) with INSTALL_JULIA_NO_VERIFY=1' >&2
+			exit 1
+		fi
+		need base64
+	fi
 
 	case "$_cmd" in
 		add)
