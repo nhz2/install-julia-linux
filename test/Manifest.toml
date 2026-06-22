@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "fc7817ce555b0e12945977903bcc7dc7ab847475"
+project_hash = "ed3b3a9813517f378b49a4d13d550dde4ec3b533"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -16,12 +16,6 @@ version = "1.11.0"
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 version = "1.11.0"
 
-[[deps.Bzip2_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
-uuid = "6e34b625-4abd-537c-b88f-471c36dfa7a0"
-version = "1.0.9+0"
-
 [[deps.ChunkCodecCore]]
 git-tree-sha1 = "1a3ad7e16a321667698a19e77362b35a1e94c544"
 uuid = "0b6fb165-00bc-4d37-ab8b-79f91016dbe1"
@@ -32,11 +26,6 @@ deps = ["ChunkCodecCore", "Zlib_jll"]
 git-tree-sha1 = "cee8104904c53d39eb94fd06cbe60cb5acde7177"
 uuid = "4c0bbee4-addc-4d73-81a0-b6caacae83c8"
 version = "1.0.0"
-
-[[deps.CompilerSupportLibraries_jll]]
-deps = ["Artifacts", "Libdl"]
-uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.3.0+1"
 
 [[deps.Dates]]
 deps = ["Printf"]
@@ -57,17 +46,6 @@ version = "0.3.1"
 [[deps.FileWatching]]
 uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
 version = "1.11.0"
-
-[[deps.GMP_jll]]
-deps = ["Artifacts", "Libdl"]
-uuid = "781609d7-10c4-51f6-84f2-b8444358ff6d"
-version = "6.3.0+2"
-
-[[deps.GnuPG_jll]]
-deps = ["Artifacts", "Bzip2_jll", "JLLWrappers", "Libassuan_jll", "Libdl", "Libgcrypt_jll", "Libgpg_error_jll", "Libksba_jll", "Nettle_jll", "OpenLDAPClient_jll", "OpenSSL_jll", "SQLite_jll", "Zlib_jll", "libusb_jll", "nPth_jll"]
-git-tree-sha1 = "97010c224b9653bbb8498e88af41b42f191f8bb8"
-uuid = "1522389b-45f8-5faa-af4d-a301b79c50ac"
-version = "2.5.18+0"
 
 [[deps.InteractiveUtils]]
 deps = ["Markdown"]
@@ -112,33 +90,9 @@ deps = ["Artifacts", "Libdl", "OpenSSL_jll"]
 uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
 version = "1.11.3+1"
 
-[[deps.Libassuan_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl", "Libgpg_error_jll"]
-git-tree-sha1 = "fc28f5f222949d4f5adb7682b2f585e76a6b132d"
-uuid = "3c934f36-e25c-5265-85bb-28494e4832bb"
-version = "3.0.2+0"
-
 [[deps.Libdl]]
 uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 version = "1.11.0"
-
-[[deps.Libgcrypt_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl", "Libgpg_error_jll"]
-git-tree-sha1 = "9a7005dd3485da311b14bf1de1bc147a72262b70"
-uuid = "d4300ac3-e22c-5743-9152-c294e39db1e4"
-version = "1.12.2+0"
-
-[[deps.Libgpg_error_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "4c7b9b514b7d2bf8239c11d8db24f5ac8e5c89f2"
-uuid = "7add5ba3-2f88-524e-9cd5-f83b8a55f7b8"
-version = "1.60.0+0"
-
-[[deps.Libksba_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl", "Libgpg_error_jll"]
-git-tree-sha1 = "01295b921f1c27bf41d8015f6bad9c92b2b125c2"
-uuid = "52a58d30-3731-5a3f-8361-26ffb4f63669"
-version = "1.6.9+0"
 
 [[deps.Logging]]
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
@@ -153,32 +107,14 @@ version = "1.11.0"
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
 version = "2025.11.4"
 
-[[deps.Nettle_jll]]
-deps = ["Artifacts", "GMP_jll", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "2759db33ad6145e162d49d86360b350c9c79354f"
-uuid = "4c82536e-c426-54e4-b420-14f461c4ed8b"
-version = "3.10.2+0"
-
 [[deps.NetworkOptions]]
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 version = "1.3.0"
-
-[[deps.OpenLDAPClient_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl", "OpenSSL_jll", "PCRE_jll"]
-git-tree-sha1 = "f8aa324067e84cdd25c6b208a822af7ccebe0f58"
-uuid = "234f2d50-f964-585e-b1c8-17cd4567e563"
-version = "2.5.19+0"
 
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
 version = "3.5.4+0"
-
-[[deps.PCRE_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "33398978c16bc2872c3d86affb1290c9658f35ed"
-uuid = "2f80f16e-611a-54ab-bc61-aa92de5b98fc"
-version = "8.45.1+0"
 
 [[deps.Parsers]]
 deps = ["Dates", "PrecompileTools", "UUIDs"]
@@ -211,12 +147,6 @@ version = "1.11.0"
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
-
-[[deps.SQLite_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll", "dlfcn_win32_jll"]
-git-tree-sha1 = "324744e40b84e6dc2cfaa4122ce969a083c40a6f"
-uuid = "76ed43ae-9a5d-5a62-8c75-30186b810ce8"
-version = "3.53.2+0"
 
 [[deps.Serialization]]
 uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
@@ -276,24 +206,6 @@ version = "1.11.0"
 deps = ["Libdl"]
 uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
 version = "1.3.1+2"
-
-[[deps.dlfcn_win32_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "e141d67ffe550eadfb5af1bdbdaf138031e4805f"
-uuid = "c4b69c83-5512-53e3-94e6-de98773c479f"
-version = "1.4.2+0"
-
-[[deps.libusb_jll]]
-deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "21cd5c06bb407555c3301b15596066ff5c1e7c7c"
-uuid = "a877fdc9-fe69-5ed6-b93d-11ecd0dc2d49"
-version = "1.0.29+0"
-
-[[deps.nPth_jll]]
-deps = ["Artifacts", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "3f010f600b2c7a4ac3ff061d6a2edc42528938b9"
-uuid = "58695248-dc95-54d8-8aad-a18bc9fe19aa"
-version = "1.8.1+0"
 
 [[deps.nghttp2_jll]]
 deps = ["Artifacts", "Libdl"]

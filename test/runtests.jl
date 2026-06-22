@@ -1,11 +1,14 @@
 using Test
-using Expect: ExpectProc, expect!
 using Downloads: download
 using ChunkCodecLibZlib: GzipEncodeOptions, encode
-using ShellCheck_jll: shellcheck
-using GnuPG_jll: gpgv
 import Tar
 import JSON
+
+if Sys.islinux()
+    # These deps are missing or broken on BSDs
+    using Expect: ExpectProc, expect!
+    using ShellCheck_jll: shellcheck
+end
 
 const script = joinpath(dirname(@__DIR__), "src", "install-julia.sh")
 const workingdir = mktempdir()
@@ -157,9 +160,10 @@ function resolve_max(versions...)
     String(m.captures[1])
 end
 
-
-@testset "shellcheck" begin
-    @test success(run(`$(shellcheck()) $(script) --severity=warning`))
+if Sys.islinux()
+    @testset "shellcheck" begin
+        @test success(run(`$(shellcheck()) $(script) --severity=warning`))
+    end
 end
 @testset "version" begin
     r = run_script("--version")
@@ -410,7 +414,7 @@ end  # if Sys.islinux() - prompt tests
 
     # ...and gpgv2 satisfies it when gpgv is absent (base64 is then the next
     # missing dependency, proving the gpgv check passed)
-    symlink(Sys.which("gpgv"), joinpath(farm, "gpgv2"))
+    symlink(something(Sys.which("gpgv"), Sys.which("gpgv2")), joinpath(farm, "gpgv2"))
     r = run_script("list"; env=("PATH" => farm,))
     @test r.code == 1
     @test r.err == "error: required command not found: base64\n"
@@ -555,22 +559,12 @@ end
     @test isempty(filter(startswith("."), readdir(symlinkdir)))
 end
 @testset "verifier override" begin
-    # INSTALL_JULIA_GPGV forces a specific verifier ahead of autodetection. Point
-    # it at GnuPG_jll's gpgv and let it do the real signature check on the mirror.
-
-    # env pairs that force the script to verify with GnuPG_jll's gpgv: its binary path
-    # (via INSTALL_JULIA_GPGV) plus whatever loader-path var its bundled libs need -
-    # LD_LIBRARY_PATH on Linux
-    gpgvenv = let
-        local cmd = gpgv()
-        local libs = [Pair(String.(split(v, '=', limit=2))...)
-                      for v in cmd.env if occursin("_LIBRARY_PATH=", v)]
-        ("INSTALL_JULIA_GPGV" => only(cmd.exec), libs...)
-    end
+    # INSTALL_JULIA_GPGV forces a specific verifier ahead of autodetection.
+    gpgvenv = "INSTALL_JULIA_GPGV" => something(Sys.which("gpgv"), Sys.which("gpgv2"))
 
     # a genuine signed tarball verifies and installs
     cleanup()
-    r = run_script_y(; env=("INSTALL_JULIA_STABLE_URL" => "file://$mirror", gpgvenv...))
+    r = run_script_y(; env=("INSTALL_JULIA_STABLE_URL" => "file://$mirror", gpgvenv))
     @test r.code == 0
     @test occursin("Resolved '' -> 1.0.0 (release)", r.err)
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
@@ -584,7 +578,7 @@ end
     data = read(tarball)
     data[end÷2] ⊻= 0xff
     write(tarball, data)
-    r = run_script_y("add", "1.0.0"; env=("INSTALL_JULIA_STABLE_URL" => "file://$evil", gpgvenv...))
+    r = run_script_y("add", "1.0.0"; env=("INSTALL_JULIA_STABLE_URL" => "file://$evil", gpgvenv))
     @test r.code == 1
     @test occursin("signature verification FAILED", r.err)
     @test !isdir(joinpath(installdir, "julia-1.0.0"))
