@@ -1,0 +1,50 @@
+name: Run tests
+
+# Full test suite: dogfood the install script's `manifest` mode to install the exact
+# stable Julia that test/Manifest.toml was written with, then use that Julia to
+# instantiate the test environment and run test/runtests.jl. Runs on x86_64/aarch64
+# Linux and on real macOS (Apple Silicon and Intel). The suite pins
+# INSTALL_JULIA_TRIPLET=x86_64-linux-gnu internally (see the top of runtests.jl) so
+# the host-dependent tests pass regardless of runner; the install step below is a
+# separate process that autodetects the native platform, so the Julia it installs is
+# actually runnable on the host.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  runtests:
+    name: runtests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Install the Julia version test/Manifest.toml was resolved with, via the
+      # script under test. This runs before Julia starts and does not inherit
+      # runtests.jl's pinned triplet, so it autodetects the runner's own platform
+      # and installs a runnable binary.
+      - name: Install Julia with the script (manifest mode)
+        run: sh src/install-julia.sh -y manifest test
+
+      # The script links into $HOME/.local/bin, which isn't on PATH by default on
+      # the runner. Add it for subsequent steps so `julia` resolves.
+      - name: Add symlink dir to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run tests
+        run: julia --project=test test/runtests.jl

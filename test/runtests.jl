@@ -14,6 +14,12 @@ const symlinkdir = joinpath(workingdir, ".local/bin")
 # Need to set this here instead of when running to work around Expect.jl bug/limitation
 ENV["INSTALL_JULIA_INSTALL_DIR"] = installdir
 ENV["INSTALL_JULIA_SYMLINK_DIR"] = symlinkdir
+# Force the target triplet so the host-dependent tests (default arch resolution,
+# nightly/PR url layout, ~arch overrides) behave identically on every runner -
+# the suite runs on macOS too, where the autodetected triplet would otherwise be
+# *-apple-darwin14. run_script copies this process ENV into each invocation, and
+# the "triplet override" testset sets INSTALL_JULIA_TRIPLET per-call, overriding it.
+ENV["INSTALL_JULIA_TRIPLET"] = "x86_64-linux-gnu"
 
 # We need a signed julia release for testing
 const mirror = joinpath(@__DIR__, "mirror")
