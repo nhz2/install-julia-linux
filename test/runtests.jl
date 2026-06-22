@@ -1515,13 +1515,13 @@ end
         @test read(`$(joinpath(symlinkdir, "julia-pr123"))`, String) == "fake julia 1.98.0-DEV\n"
     end
 
-    # a ~arch override swaps only the cputype, keeping the configured platform: the
-    # os/suffix segments are preserved (darwin stays darwin; an exotic libc like musl
-    # is not rewritten to gnu, and arm on linux still picks gnueabihf).
+    # a ~arch override swaps the cputype and rebuilds the triplet from the configured
+    # platform's os family, exactly as autodetection would: darwin stays darwin, and
+    # arm on linux picks gnueabihf (not a verbatim suffix swap, which would give -gnu).
     for (base, arch, want) in (
             ("x86_64-apple-darwin14", "aarch64", "aarch64-apple-darwin14"),
             ("x86_64-linux-gnu",      "ppc64le", "powerpc64le-linux-gnu"),
-            ("x86_64-linux-musl",     "aarch64", "aarch64-linux-musl"))
+            ("x86_64-linux-gnu",      "armv8l",  "armv7l-linux-gnueabihf"))
         cleanup()
         mr = fake_mirror("1.0.0"; triplet=want)
         r = run_script_y("add", "1.0.0~$arch"; env=(
@@ -1532,6 +1532,18 @@ end
         @test occursin("Resolved '1.0.0~$arch' -> 1.0.0~$arch (release)", r.err)
         @test isfile(joinpath(installdir, "julia-1.0.0~$arch/bin/julia"))
     end
+
+    # ~arch needs an os family the script knows how to re-form. A configured triplet
+    # whose os it can't form (a musl libc here; also Windows, a future os) installs
+    # fine on its own but is rejected when combined with ~arch, rather than guessing
+    # the suffix - and dies in resolve_spec, before any download.
+    cleanup()
+    r = run_script_y("add", "1.0.0~aarch64"; env=(
+        "INSTALL_JULIA_TRIPLET" => "x86_64-linux-musl",
+        "INSTALL_JULIA_NO_VERIFY" => "1"))
+    @test r.code == 1
+    @test r.err == "error: ~aarch64 override is not supported for triplet x86_64-linux-musl\n"
+    @test !isdir(installdir)
 
     # a triplet whose os we can't map to a nightly url (a synthetic os here; in the
     # wild this is Windows, whose nightlies ship only as .exe/.zip) resolves stable

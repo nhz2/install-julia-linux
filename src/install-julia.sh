@@ -370,33 +370,39 @@ norm_cputype() {
 }
 
 # Two-step architecture resolution. STEP 1 settles ARCH_TRIPLET - the value Julia puts
-# in versions.json's `triplet` field, which is how we pick the stable build (a full
-# triplet is unambiguous: it tells gnu from musl, linux from darwin from freebsd):
+# in versions.json's `triplet` field, which is how we pick the stable build:
 #   - INSTALL_JULIA_TRIPLET, if set, is used verbatim (any platform, even one this
 #     script can't autodetect);
 #   - otherwise the os family comes from `uname -s` and the cputype from `uname -m`
 #     (Rosetta-aware), formed into Julia's triplet spelling.
-# A ~arch override ($1) swaps just the cputype, keeping the platform: on a config-set
-# triplet it replaces the leading segment (so a darwin/freebsd/musl triplet stays
-# itself); on autodetect it re-forms via the host's os family (so arm picks gnueabihf).
+# A ~arch override ($1) controls the cputype; the os family is taken from
+# INSTALL_JULIA_TRIPLET if set, otherwise from `uname -s`, and the triplet is rebuilt
+# from it (so arm picks gnueabihf). A configured triplet whose os this script can't
+# re-form (a musl libc, Windows, a future os) cannot take a ~arch override - we reject
+# that rather than guess the suffix.
 # STEP 2 derives the nightly/PR download coordinates FROM the triplet: ARCH_FILE (the
 # cputype, used in the bucket dir and filename) and ARCH_OS (linux | macos | freebsd,
 # the os segment of the nightly url; "" when the triplet's os has no nightly tarball
-# this script can install, which resolve_spec rejects for nightly/PR specs - notably
-# Windows (w64-mingw32), whose nightlies ship only as .exe/.zip under a differently
-# shaped bin/winnt/... url).
+# this script can install, which resolve_spec rejects for nightly/PR specs.
 arch_setup() {
 	_arch_setup_override=$1
-	if [ -n "$TRIPLET_OVERRIDE" ]; then
-		if [ -n "$_arch_setup_override" ]; then
-			_arch_setup_cpu=$(norm_cputype "$_arch_setup_override")
-			ARCH_TRIPLET="$_arch_setup_cpu-${TRIPLET_OVERRIDE#*-}"
-		else
-			_arch_setup_cpu=${TRIPLET_OVERRIDE%%-*}
-			ARCH_TRIPLET=$TRIPLET_OVERRIDE
-		fi
+	if [ -n "$TRIPLET_OVERRIDE" ] && [ -z "$_arch_setup_override" ]; then
+		_arch_setup_cpu=${TRIPLET_OVERRIDE%%-*}
+		ARCH_TRIPLET=$TRIPLET_OVERRIDE
 	else
-		_arch_setup_os=$(uname -s)
+		if [ -n "$TRIPLET_OVERRIDE" ]; then
+			# ~arch over a configured triplet: take the os family from the triplet so
+			# the rebuild below re-forms it (arm -> gnueabihf, etc.). An os we can't
+			# re-form can't take a ~arch override.
+			case "$TRIPLET_OVERRIDE" in
+				*-linux-gnu*)           _arch_setup_os=Linux ;;
+				*-apple-darwin14)       _arch_setup_os=Darwin ;;
+				*-unknown-freebsd11.1)  _arch_setup_os=FreeBSD ;;
+				*) die "~$_arch_setup_override override is not supported for triplet $TRIPLET_OVERRIDE" ;;
+			esac
+		else
+			_arch_setup_os=$(uname -s)
+		fi
 		if [ -n "$_arch_setup_override" ]; then
 			_arch_setup_cpu=$(norm_cputype "$_arch_setup_override")
 		else
@@ -411,9 +417,7 @@ arch_setup() {
 			fi
 			_arch_setup_cpu=$(norm_cputype "$_arch_setup_cpu")
 		fi
-		# Form Julia's triplet for the host os. The os vendor/version segments
-		# (apple-darwin14, unknown-freebsd11.1) are Julia's fixed BinaryBuilder tags,
-		# not the host's actual os version; arm on linux is hardfloat.
+		# Form Julia's triplet for the host os.
 		case "$_arch_setup_os" in
 			Linux)
 				case "$_arch_setup_cpu" in
@@ -429,6 +433,9 @@ arch_setup() {
 		die "bad triplet '$ARCH_TRIPLET' (triplet must be one or more of A-Za-z0-9_.-)" ;;
 	esac
 	ARCH_FILE=$_arch_setup_cpu
+	case "$ARCH_FILE" in "" | *[!A-Za-z0-9_.-]*)
+		die "bad cputype '$ARCH_FILE' (must be one or more of A-Za-z0-9_.-)" ;;
+	esac
 	case "$ARCH_TRIPLET" in
 		*-linux-gnu*)           ARCH_OS=linux ;;
 		*-apple-darwin14)       ARCH_OS=macos ;;
