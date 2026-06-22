@@ -722,21 +722,33 @@ install_resolved() {
 # Symlink management                                                          #
 # --------------------------------------------------------------------------- #
 
+# linked_to NAME TARGET: succeed iff SYMLINK_DIR/NAME is a symlink whose text is exactly
+# TARGET.
+linked_to() { [ "$(readlink "$SYMLINK_DIR/$1" 2>/dev/null)" = "$2" ]; }
+
 link() {
-	# link NAME TARGET - create/replace SYMLINK_DIR/NAME -> TARGET, atomically.
-	# Not `ln -sfn` (unlink+symlink: NAME briefly missing, racing links can
-	# die on EEXIST). Build the link in scratch and rename(2) it into place:
-	# the scratch link is itself named NAME and mv's stated target is
-	# SYMLINK_DIR (install_resolved's trick, in lieu of the non-POSIX -T), so
-	# rename replaces an existing NAME without dereferencing it. A hard kill
-	# can leak a .link.* scratch dir; never reaped (it may be a live peer's),
-	# but tiny, hidden, and off every scan.
+	# link NAME TARGET - create/replace SYMLINK_DIR/NAME -> TARGET, atomically. mktemp
+	# and ln failures are hard errors and die here; only a failed mv returns non-zero,
+	# leaving it to the caller to retry (raise_rollup's loop) or die.
+	# Not `ln -sfn` (unlink+symlink: NAME briefly missing, racing links can die on
+	# EEXIST). Build the link in scratch and rename(2) it into place: the scratch link is
+	# itself named NAME and mv's stated target is SYMLINK_DIR (in lieu of the non-POSIX
+	# -T), so rename replaces an existing NAME without dereferencing it. A hard kill can
+	# leak a .link.* scratch dir; never reaped (may be a live peer's), but tiny and hidden.
 	mkdir -p "$SYMLINK_DIR"
 	_lnk=$(mktemp -d "$SYMLINK_DIR/.link.XXXXXXXXXX") ||
 		die "could not create scratch dir in $SYMLINK_DIR"
-	if ! ln -s "$2" "$_lnk/$1" || ! mv -f "$_lnk/$1" "$SYMLINK_DIR/"; then
+	if ! ln -s "$2" "$_lnk/$1"; then
 		rm -rf "$_lnk" 2>/dev/null || :
 		die "could not create symlink $1"
+	fi
+	if ! mv -f "$_lnk/$1" "$SYMLINK_DIR/"; then
+		# A failed mv is not fatal here - it can simply mean a racing peer already put
+		# NAME -> TARGET in place (macOS mv then refuses the now-identical replace).
+		# Telling that desired end state from a real failure (via linked_to) is left to
+		# the caller, which can then retry (raise_rollup's loop) or die.
+		rm -rf "$_lnk" 2>/dev/null || :
+		return 1
 	fi
 	rmdir "$_lnk" 2>/dev/null || :
 	info "symlink $1 -> $2"
@@ -756,12 +768,14 @@ raise_rollup() {
 		_cur=$(readlink "$SYMLINK_DIR/$1" 2>/dev/null | sed -n 's#.*/julia-\(.*\)/bin/julia$#\1#p')
 		[ -e "$SYMLINK_DIR/$1" ] && [ -n "$_cur" ] &&
 			[ "$(printf '%s\n%s\n' "$_cur" "$2" | version_max)" = "$_cur" ] && break
-		link "$1" "$INSTALL_DIR/julia-$2/bin/julia"
+		# A failed link (e.g. a peer raced us to the same target, which macOS mv refuses)
+		# is fine: the next iteration re-reads and either sees it is now done or retries.
+		link "$1" "$INSTALL_DIR/julia-$2/bin/julia" || :
 		_i=$((_i + 1))
 	done
 }
 
-set_default() { link "julia" "$1"; }
+set_default() { linked_to "julia" "$1" || link "julia" "$1" || linked_to "julia" "$1" || die "could not create symlink julia"; }
 
 # --------------------------------------------------------------------------- #
 # Commands                                                                    #
@@ -950,7 +964,10 @@ cmd_install() {
 	fi
 
 	# Create the direct + rollup symlinks for an installed build.
-	link "$_destname" "$INSTALL_DIR/$_destname/bin/julia"
+	linked_to "$_destname" "$INSTALL_DIR/$_destname/bin/julia" ||
+		link "$_destname" "$INSTALL_DIR/$_destname/bin/julia" ||
+		linked_to "$_destname" "$INSTALL_DIR/$_destname/bin/julia" ||
+		die "could not create symlink $_destname"
 	if [ "$R_ROLLUP" = 1 ]; then
 		# assert R_LABEL is a core version
 		has_dash "$R_LABEL" && die "unreachable"

@@ -528,20 +528,6 @@ end
 
     # --reinstall takes the park-and-swap path and is just as clean
     r = run_script_y("--reinstall", "add", "1.0.0"; env)
-    # TEMP DIAGNOSTIC: on macOS this exits 1 though the install completes. Re-run the
-    # exact same reinstall under `sh -x` and dump the trace tail so we can see which
-    # command trips `set -e`. (1.0.0 is already installed at this point.)
-    if r.code != 0
-        let e = copy(ENV)
-            e["INSTALL_JULIA_STABLE_URL"] = "file://$mirror"
-            out, err = IOBuffer(), IOBuffer()
-            p = run(pipeline(ignorestatus(setenv(`sh -x $script -y --reinstall add 1.0.0`, e)),
-                             stdout=out, stderr=err))
-            tr = split(String(take!(err)), '\n')
-            @info "REINSTALL sh -x trace (exit=$(p.exitcode))"
-            println(stderr, join(tr[max(1, length(tr) - 50):end], '\n'))
-        end
-    end
     @test r.code == 0
     @test occursin("already installed; refreshing", r.err)
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
@@ -1206,14 +1192,15 @@ end
     # manifest" status line load_table prints on a fresh resolve.
     @test occursin(r"Downloading \S+\.tar\.gz", r.err)   # fresh install downloads
 
-    # -y alone on an installed stable release: symlink refresh only - no
-    # re-download, and the installed tree itself is left untouched
+    # -y alone on an installed stable release: no re-download, and since the symlinks
+    # already point where they should, no redundant re-link either; the installed tree
+    # itself is left untouched
     marker = joinpath(installdir, "julia-1.0.0/MARKER")
     write(marker, "x")
     r = run_script_y("add", "1.0.0"; env)
     @test r.code == 0
     @test !occursin("Downloading", r.err)
-    @test occursin("symlink julia-1.0.0", r.err)
+    @test !occursin("symlink julia-1.0.0", r.err)
     @test isfile(marker)
 
     # auto re-download-and-replace takes BOTH -y and --reinstall
