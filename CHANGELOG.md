@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+
+- macOS and FreeBSD are now supported alongside Linux. The target triplet is autodetected and can be set explicitly with the new `INSTALL_JULIA_TRIPLET` environment variable.
+
 ### Fixed
 
 - Stable/prerelease download URLs are no longer built by hand. `<INSTALL_JULIA_STABLE_URL>/bin/versions.json` (default `https://julialang-s3.julialang.org/bin/versions.json`) is searched for the entry matching the version and build `triplet`, and its `url` field gives the download path. Installs no longer break when the layout under `/bin` changes.

@@ -1461,6 +1461,92 @@ end
         @test isfile(joinpath(installdir, "julia-1.0.0~$aliasname/bin/julia"))
     end
 end
+@testset "triplet override" begin
+    # INSTALL_JULIA_TRIPLET sets the target triplet directly, so any host can resolve
+    # macOS/FreeBSD (or any) builds. Stable resolution matches the manifest `triplet`
+    # field and follows the manifest url, so the os/arch a build is served under is
+    # irrelevant - only the triplet has to agree.
+    for trip in ("x86_64-apple-darwin14", "aarch64-apple-darwin14",
+                 "x86_64-unknown-freebsd11.1", "powerpc64le-linux-gnu",
+                 "x86_64-linux-musl")
+        cleanup()
+        mr = fake_mirror("1.0.0"; triplet=trip)
+        r = run_script_y("add", "1.0.0"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+            "INSTALL_JULIA_TRIPLET" => trip,
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 0
+        @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+    end
+
+    # nightly/PR download coordinates are derived FROM the triplet: the os segment of
+    # the url tracks the platform (linux | macos | freebsd) and the bucket/filename
+    # arch is the triplet's cputype.
+    for (trip, os, filearch) in (
+            ("x86_64-apple-darwin14",      "macos",   "x86_64"),
+            ("aarch64-apple-darwin14",     "macos",   "aarch64"),
+            ("x86_64-unknown-freebsd11.1", "freebsd", "x86_64"))
+        cleanup()
+        nmr = joinpath(mktempdir(), "mirror")
+        for (name, ver) in (
+            ("bin/$os/$filearch/julia-latest-$os-$filearch.tar.gz", "1.99.0-DEV"),
+            ("bin/$os/$filearch/1.11/julia-latest-$os-$filearch.tar.gz", "1.11.8-DEV"),
+            ("bin/$os/$filearch/julia-pr123-$os-$filearch.tar.gz", "1.98.0-DEV"))
+            mkpath(dirname(joinpath(nmr, name)))
+            write(joinpath(nmr, name), fake_tarball(ver))
+        end
+        env = ("INSTALL_JULIA_NIGHTLY_URL" => "file://$nmr",
+               "INSTALL_JULIA_TRIPLET" => trip,
+               "INSTALL_JULIA_NO_VERIFY" => "1")
+        r = run_script_y("nightly"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-nightly"))`, String) == "fake julia 1.99.0-DEV\n"
+        r = run_script_y("add", "1.11-nightly"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-1.11-nightly"))`, String) == "fake julia 1.11.8-DEV\n"
+        r = run_script_y("add", "pr123"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-pr123"))`, String) == "fake julia 1.98.0-DEV\n"
+    end
+
+    # a ~arch override swaps only the cputype, keeping the configured platform: the
+    # os/suffix segments are preserved (darwin stays darwin; an exotic libc like musl
+    # is not rewritten to gnu, and arm on linux still picks gnueabihf).
+    for (base, arch, want) in (
+            ("x86_64-apple-darwin14", "aarch64", "aarch64-apple-darwin14"),
+            ("x86_64-linux-gnu",      "ppc64le", "powerpc64le-linux-gnu"),
+            ("x86_64-linux-musl",     "aarch64", "aarch64-linux-musl"))
+        cleanup()
+        mr = fake_mirror("1.0.0"; triplet=want)
+        r = run_script_y("add", "1.0.0~$arch"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+            "INSTALL_JULIA_TRIPLET" => base,
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 0
+        @test occursin("Resolved '1.0.0~$arch' -> 1.0.0~$arch (release)", r.err)
+        @test isfile(joinpath(installdir, "julia-1.0.0~$arch/bin/julia"))
+    end
+
+    # a triplet whose os we can't map to a nightly url (a synthetic os here; in the
+    # wild this is Windows, whose nightlies ship only as .exe/.zip) resolves stable
+    # builds fine, but refuses nightly/PR specs - and does so in resolve_spec, before
+    # any download
+    cleanup()
+    mr = fake_mirror("1.0.0"; triplet="x86_64-w64-fakeos")
+    r = run_script_y("add", "1.0.0"; env=(
+        "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+        "INSTALL_JULIA_TRIPLET" => "x86_64-w64-fakeos",
+        "INSTALL_JULIA_NO_VERIFY" => "1"))
+    @test r.code == 0
+    @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+    for (spec, what) in (("nightly", "nightly"), ("1.11-nightly", "nightly"), ("pr123", "PR"))
+        r = run_script_y("add", spec; env=(
+            "INSTALL_JULIA_TRIPLET" => "x86_64-w64-fakeos",
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 1
+        @test r.err == "error: no $what builds for x86_64-w64-fakeos\n"
+    end
+end
 @testset "manifest url layout" begin
     # The download url comes from the manifest, NOT a path the script reconstructs.
     # Serve the tarball at a non-conventional location and point the manifest url at

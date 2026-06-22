@@ -25,6 +25,7 @@ INSTALL_DIR=${INSTALL_JULIA_INSTALL_DIR:-"$HOME/packages/julias"}
 SYMLINK_DIR=${INSTALL_JULIA_SYMLINK_DIR:-"$HOME/.local/bin"}
 NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
 GPGV=${INSTALL_JULIA_GPGV:-}   # verifier command; empty autodetects using gpgv_bin defined below
+TRIPLET_OVERRIDE=${INSTALL_JULIA_TRIPLET:-}   # target triplet; empty autodetects from uname (arch_setup)
 
 # The canonical bucket the manifest's download urls are written against. A mirror
 # may serve versions.json (from STABLE_BASE) while the urls inside still point here;
@@ -104,8 +105,9 @@ R_URL=""       # tarball download URL
 R_ROLLUP=0     # 1 if this is a plain stable release eligible for X.Y / X rollups
 
 # Detected/overridden architecture (see arch_setup):
+ARCH_TRIPLET=""  # the versions.json `triplet` we match stable builds on: x86_64-linux-gnu, x86_64-apple-darwin14, ...
 ARCH_FILE=""     # nightly-bucket dir / filename arch: x86_64 | i686 | aarch64 (raw token if unrecognized)
-ARCH_TRIPLET=""  # the versions.json `triplet` we match stable builds on: x86_64-linux-gnu, ...
+ARCH_OS=""       # nightly-url os segment derived from the triplet: linux | macos | freebsd ("" if unknown)
 ARCH_SUFFIX=""   # "~<arch>" tag appended to the label when ~arch was given ("" if autodetected)
 
 # Cached "<version> <url-suffix>" table for ARCH_TRIPLET, extracted by load_table. The
@@ -351,30 +353,87 @@ version_max() {
 # Architecture                                                                #
 # --------------------------------------------------------------------------- #
 
-# arch_setup override; resolve an arch alias to the two names we need. ARCH_FILE is
-# the filename arch (also the nightlies-bucket dir); ARCH_TRIPLET is the value Julia
-# puts in versions.json's `triplet` field, which is how we pick the stable build -
-# a full triplet is unambiguous (it tells gnu from musl). An UNRECOGNIZED arch is
-# passed through, guessing the conventional <arch>-linux-gnu triplet: we can't
-# predict a future Julia arch's names, so rather than reject a newly-shipped arch we
-# assume the usual pattern and let discovery come up empty if the guess is wrong (it
-# then works automatically, or via ~arch, with no script update).
-#
-# The accepted `uname -m` spellings (and the cputype each normalizes to) follow
-# rustup's get_architecture:
+# Normalize a `uname -m` / ~arch spelling to Julia's cputype (the filename arch and
+# nightlies-bucket dir). The accepted spellings follow rustup's get_architecture; an
+# UNRECOGNIZED token is passed through unchanged so a newly-shipped Julia arch works
+# with no script update.
 # https://github.com/rust-lang/rustup/blob/1.29.0/rustup-init.sh
-arch_setup() {
-	_arch_uname=${1:-$(uname -m)}
-	case "$_arch_uname" in
-		x86_64 | x86-64 | x64 | amd64)  ARCH_FILE=x86_64;      ARCH_TRIPLET=x86_64-linux-gnu ;;
-		i386 | i486 | i686 | i786 | x86) ARCH_FILE=i686;       ARCH_TRIPLET=i686-linux-gnu ;;
-		aarch64 | arm64)                ARCH_FILE=aarch64;     ARCH_TRIPLET=aarch64-linux-gnu ;;
-		armv7l | armv8l)                ARCH_FILE=armv7l;      ARCH_TRIPLET=armv7l-linux-gnueabihf ;;
-		ppc64le | powerpc64le)          ARCH_FILE=powerpc64le; ARCH_TRIPLET=powerpc64le-linux-gnu ;;
-		*)                              ARCH_FILE=$_arch_uname; ARCH_TRIPLET="$_arch_uname-linux-gnu" ;;
+norm_cputype() {
+	case "$1" in
+		x86_64 | x86-64 | x64 | amd64)   echo x86_64 ;;
+		i386 | i486 | i686 | i786 | x86) echo i686 ;;
+		aarch64 | arm64)                 echo aarch64 ;;
+		armv7l | armv8l)                 echo armv7l ;;
+		ppc64le | powerpc64le)           echo powerpc64le ;;
+		*)                               echo "$1" ;;
 	esac
+}
+
+# Two-step architecture resolution. STEP 1 settles ARCH_TRIPLET - the value Julia puts
+# in versions.json's `triplet` field, which is how we pick the stable build (a full
+# triplet is unambiguous: it tells gnu from musl, linux from darwin from freebsd):
+#   - INSTALL_JULIA_TRIPLET, if set, is used verbatim (any platform, even one this
+#     script can't autodetect);
+#   - otherwise the os family comes from `uname -s` and the cputype from `uname -m`
+#     (Rosetta-aware), formed into Julia's triplet spelling.
+# A ~arch override ($1) swaps just the cputype, keeping the platform: on a config-set
+# triplet it replaces the leading segment (so a darwin/freebsd/musl triplet stays
+# itself); on autodetect it re-forms via the host's os family (so arm picks gnueabihf).
+# STEP 2 derives the nightly/PR download coordinates FROM the triplet: ARCH_FILE (the
+# cputype, used in the bucket dir and filename) and ARCH_OS (linux | macos | freebsd,
+# the os segment of the nightly url; "" when the triplet's os has no nightly tarball
+# this script can install, which resolve_spec rejects for nightly/PR specs - notably
+# Windows (w64-mingw32), whose nightlies ship only as .exe/.zip under a differently
+# shaped bin/winnt/... url).
+arch_setup() {
+	_arch_setup_override=$1
+	if [ -n "$TRIPLET_OVERRIDE" ]; then
+		if [ -n "$_arch_setup_override" ]; then
+			_arch_setup_cpu=$(norm_cputype "$_arch_setup_override")
+			ARCH_TRIPLET="$_arch_setup_cpu-${TRIPLET_OVERRIDE#*-}"
+		else
+			_arch_setup_cpu=${TRIPLET_OVERRIDE%%-*}
+			ARCH_TRIPLET=$TRIPLET_OVERRIDE
+		fi
+	else
+		_arch_setup_os=$(uname -s)
+		if [ -n "$_arch_setup_override" ]; then
+			_arch_setup_cpu=$(norm_cputype "$_arch_setup_override")
+		else
+			# The host's own cputype. On Darwin `uname -m` can lie under Rosetta, so
+			# (like rustup) we consult sysctl for the real architecture.
+			_arch_setup_cpu=$(uname -m)
+			if [ "$_arch_setup_os" = Darwin ]; then
+				case "$_arch_setup_cpu" in
+					i386)   if (sysctl hw.optional.x86_64 2>/dev/null || true) | grep -q ': 1'; then _arch_setup_cpu=x86_64; fi ;;
+					x86_64) if (sysctl hw.optional.arm64  2>/dev/null || true) | grep -q ': 1'; then _arch_setup_cpu=arm64;  fi ;;
+				esac
+			fi
+			_arch_setup_cpu=$(norm_cputype "$_arch_setup_cpu")
+		fi
+		# Form Julia's triplet for the host os. The os vendor/version segments
+		# (apple-darwin14, unknown-freebsd11.1) are Julia's fixed BinaryBuilder tags,
+		# not the host's actual os version; arm on linux is hardfloat.
+		case "$_arch_setup_os" in
+			Linux)
+				case "$_arch_setup_cpu" in
+					armv7l) ARCH_TRIPLET="$_arch_setup_cpu-linux-gnueabihf" ;;
+					*)      ARCH_TRIPLET="$_arch_setup_cpu-linux-gnu" ;;
+				esac ;;
+			Darwin)  ARCH_TRIPLET="$_arch_setup_cpu-apple-darwin14" ;;
+			FreeBSD) ARCH_TRIPLET="$_arch_setup_cpu-unknown-freebsd11.1" ;;
+			*) die "unsupported OS '$_arch_setup_os' (set INSTALL_JULIA_TRIPLET to install for another platform)" ;;
+		esac
+	fi
 	case "$ARCH_TRIPLET" in "" | *[!A-Za-z0-9_.-]*)
 		die "bad triplet '$ARCH_TRIPLET' (triplet must be one or more of A-Za-z0-9_.-)" ;;
+	esac
+	ARCH_FILE=$_arch_setup_cpu
+	case "$ARCH_TRIPLET" in
+		*-linux-gnu*)           ARCH_OS=linux ;;
+		*-apple-darwin14)       ARCH_OS=macos ;;
+		*-unknown-freebsd11.1)  ARCH_OS=freebsd ;;
+		*)                      ARCH_OS="" ;;
 	esac
 }
 
@@ -778,21 +837,24 @@ cmd_install() {
 	# Resolve anything the fast path did not already settle (R_KIND still empty).
 	[ -n "$R_KIND" ] || case "$_spec" in
 		nightly)
+			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-latest-linux-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		[0-9]*.[0-9]*-nightly)
+			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			_nightly_minor=${_spec%-nightly}
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/$_nightly_minor/julia-latest-linux-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		pr[0-9]*)
 			# Require the whole tail to be digits (the glob only pins the first)
 			is_digits "${_spec#pr}" || die "bad pr spec: $_spec (expected pr<number>)"
+			[ -n "$ARCH_OS" ] || die "no PR builds for $ARCH_TRIPLET"
 			R_KIND='pr'
-			R_URL="$NIGHTLY_BASE/bin/linux/$ARCH_FILE/julia-$_spec-linux-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/julia-$_spec-$ARCH_OS-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		pre)
@@ -1127,6 +1189,9 @@ Environment variables:
                               (default: 0)
   INSTALL_JULIA_GPGV          force a specific signature-verification command
                               (default: autodetect gpgv/gpgv2)
+  INSTALL_JULIA_TRIPLET       target triplet to install for, e.g.
+                              x86_64-linux-gnu or aarch64-apple-darwin14
+                              (default: autodetect from uname)
   INSTALL_JULIA_STABLE_URL    base for stable/prerelease binaries
                               (default: https://julialang-s3.julialang.org)
   INSTALL_JULIA_NIGHTLY_URL   base for nightly and PR builds

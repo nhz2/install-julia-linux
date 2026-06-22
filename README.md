@@ -84,9 +84,29 @@ install-julia.sh [options] [command] [version]
 | `1.11-nightly`   | Latest nightly of the `1.11` branch.                              |
 | `pr1234`         | The latest CI build of pull request 1234.                         |
 
-### Architecture override
+### Platform override
 
-Any specifier may carry a `~arch` suffix to override autodetection:
+The target triplet is autodetected on Linux, macOS, and FreeBSD.
+
+Set `INSTALL_JULIA_TRIPLET` to install for a specific platform:
+
+```sh
+INSTALL_JULIA_TRIPLET=aarch64-apple-darwin14 install-julia.sh add 1.10
+```
+
+Available triplets:
+
+- `x86_64-linux-gnu`
+- `i686-linux-gnu`
+- `aarch64-linux-gnu`
+- `armv7l-linux-gnueabihf`
+- `powerpc64le-linux-gnu`
+- `x86_64-apple-darwin14`
+- `aarch64-apple-darwin14`
+- `x86_64-unknown-freebsd11.1`
+
+Any specifier may also carry a `~arch` suffix to override just the CPU, keeping
+the autodetected (or configured) platform:
 
 ```sh
 install-julia.sh 1.10~x86_64     # force 64-bit x86
@@ -102,6 +122,7 @@ install-julia.sh 1.10~aarch64    # force ARM64
 | `INSTALL_JULIA_SYMLINK_DIR`  | `~/.local/bin`                                | Where symlinks are created.                        |
 | `INSTALL_JULIA_NO_VERIFY`    | `0`                                           | Set to `1` to skip GPG verification.               |
 | `INSTALL_JULIA_GPGV`         | autodetect `gpgv`/`gpgv2`                     | Force a specific signature-verification command.   |
+| `INSTALL_JULIA_TRIPLET`      | autodetect from `uname`                       | Target triplet, e.g. `x86_64-linux-gnu` or `aarch64-apple-darwin14`. |
 | `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`          | Base for stable/prerelease binaries.               |
 | `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly and PR builds.                    |
 
