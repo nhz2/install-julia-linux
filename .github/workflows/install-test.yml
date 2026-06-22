@@ -1,8 +1,9 @@
 name: Install test
 
 # Smoke test: run the install script non-interactively (-y) with all defaults on
-# x86_64 and aarch64 Linux runners, then confirm the installed `julia` actually runs.
-# This does not run test/runtests.jl - it only exercises a plain default install.
+# x86_64 and aarch64 Linux runners and on real macOS (Apple Silicon and Intel),
+# then confirm the installed `julia` actually runs. This does not run
+# test/runtests.jl - it only exercises a plain default install.
 
 on:
   push:
@@ -20,6 +21,8 @@ jobs:
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
+          - macos-latest
+          - macos-15-intel
 
     steps:
       - uses: actions/checkout@v6
@@ -33,4 +36,6 @@ jobs:
         run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Check julia runs
-        run: julia --version
+        run: |
+          julia --version
+          julia -e 'using InteractiveUtils; versioninfo()'

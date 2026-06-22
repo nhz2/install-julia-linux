@@ -1,0 +1,38 @@
+name: Run tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  runtests:
+    name: runtests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+          - macos-latest
+          - macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Install the Julia version test/Manifest.toml was resolved with.
+      - name: Install Julia with the script (manifest mode)
+        run: sh src/install-julia.sh -y manifest test
+
+      # The script links into $HOME/.local/bin, which isn't on PATH by default on
+      # the runner. Add it for subsequent steps so `julia` resolves.
+      - name: Add symlink dir to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Instantiate test environment
+        run: julia --project=test -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Run tests
+        run: julia --project=test test/runtests.jl

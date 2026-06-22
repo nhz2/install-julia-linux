@@ -14,6 +14,12 @@ const symlinkdir = joinpath(workingdir, ".local/bin")
 # Need to set this here instead of when running to work around Expect.jl bug/limitation
 ENV["INSTALL_JULIA_INSTALL_DIR"] = installdir
 ENV["INSTALL_JULIA_SYMLINK_DIR"] = symlinkdir
+# Force the target triplet so the host-dependent tests (default arch resolution,
+# nightly/PR url layout, ~arch overrides) behave identically on every runner -
+# the suite runs on macOS too, where the autodetected triplet would otherwise be
+# *-apple-darwin14. run_script copies this process ENV into each invocation, and
+# the "triplet override" testset sets INSTALL_JULIA_TRIPLET per-call, overriding it.
+ENV["INSTALL_JULIA_TRIPLET"] = "x86_64-linux-gnu"
 
 # We need a signed julia release for testing
 const mirror = joinpath(@__DIR__, "mirror")
@@ -273,91 +279,96 @@ end
     @test r.code == 1
     @test r.err == "error: unrecognized version specifier: uninstall\n"
 end
-@testset "confirm prompt" begin
-    # confirm() reads the answer from /dev/tty, so it needs a controlling
-    # terminal. ExpectProc runs the script on a fresh pty, and `setsid --ctty`
-    # makes that pty the controlling terminal (otherwise /dev/tty would be the
-    # test runner's terminal - or nothing - and never the Expect pty).
-    fakejulia = joinpath(ENV["INSTALL_JULIA_INSTALL_DIR"], "julia-1.10.0")
-    cmd = `setsid -w -c $script remove 1.10.0`
+# The prompt tests drive the script through `setsid` to hand it (or deny it) a
+# controlling terminal; `setsid` is Linux-only and the prompt logic is plain POSIX sh,
+# so skip these interactive checks on other platforms rather than port the harness.
+if Sys.islinux()
+    @testset "confirm prompt" begin
+        # confirm() reads the answer from /dev/tty, so it needs a controlling
+        # terminal. ExpectProc runs the script on a fresh pty, and `setsid --ctty`
+        # makes that pty the controlling terminal (otherwise /dev/tty would be the
+        # test runner's terminal - or nothing - and never the Expect pty).
+        fakejulia = joinpath(ENV["INSTALL_JULIA_INSTALL_DIR"], "julia-1.10.0")
+        cmd = `setsid -w -c $script remove 1.10.0`
 
-    # answering "n" aborts and leaves the version in place
-    mkpath(joinpath(fakejulia, "bin"))
-    proc = ExpectProc(cmd, 30)
-    @test occursin("Remove $fakejulia", expect!(proc, "[y/N] "))
-    println(proc, "n")
-    expect!(proc, "Aborted.")
-    @test success(proc)
-    @test isdir(fakejulia)
-
-    # answering "y" removes it
-    proc = ExpectProc(cmd, 30)
-    expect!(proc, "[y/N] ")
-    println(proc, "y")
-    expect!(proc, "Removed julia-1.10.0")
-    @test success(proc)
-    @test !isdir(fakejulia)
-
-    # `setsid` without --ctty leaves the script with no controlling terminal,
-    # so confirm() cannot ask: it must decline, point at -y, and abort
-    mkpath(joinpath(fakejulia, "bin"))
-    out, err = IOBuffer(), IOBuffer()
-    p = run(pipeline(ignorestatus(`setsid -w $script remove 1.10.0`), stdout=out, stderr=err))
-    notty_err = String(take!(err))
-    @test p.exitcode == 1
-    @test occursin("no terminal available to confirm; exiting (pass -y to proceed non-interactively)", notty_err)
-    @test isdir(fakejulia)
-
-    # -y / --yes skip the prompt entirely, so removal proceeds with no terminal
-    for flag in ("-y", "--yes")
+        # answering "n" aborts and leaves the version in place
         mkpath(joinpath(fakejulia, "bin"))
-        out, err = IOBuffer(), IOBuffer()
-        p = run(pipeline(ignorestatus(`setsid -w $script $flag remove 1.10.0`), stdout=out, stderr=err))
-        yes_err = String(take!(err))
-        @test p.exitcode == 0
-        @test !occursin("[y/N]", yes_err)
-        @test occursin("Removed julia-1.10.0", yes_err)
-        @test !isdir(fakejulia)
-    end
-end
-@testset "install prompt" begin
-    cleanup()
-    mr = fake_mirror("1.0.0")
-    # ExpectProc offers no per-process env (see the ENV comment at the top),
-    # so point the script at the fake mirror via the test process's own
-    # environment for the duration of this testset
-    withenv("INSTALL_JULIA_STABLE_URL" => "file://$mr",
-            "INSTALL_JULIA_NO_VERIFY" => "1") do
-        # answering "n" to a fresh install aborts before anything is downloaded
-        cmd = `setsid -w -c $script add 1.0.0`
         proc = ExpectProc(cmd, 30)
-        @test occursin("Install 1.0.0 into", expect!(proc, "[y/N] "))
+        @test occursin("Remove $fakejulia", expect!(proc, "[y/N] "))
         println(proc, "n")
         expect!(proc, "Aborted.")
         @test success(proc)
-        @test !isdir(joinpath(installdir, "julia-1.0.0"))
+        @test isdir(fakejulia)
 
-        # answering "y" installs
+        # answering "y" removes it
         proc = ExpectProc(cmd, 30)
         expect!(proc, "[y/N] ")
         println(proc, "y")
-        expect!(proc, "Installed 1.0.0")
+        expect!(proc, "Removed julia-1.10.0")
         @test success(proc)
-        @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+        @test !isdir(fakejulia)
 
-        # already installed, no --reinstall: the prompt offers a symlink
-        # refresh + default switch, and "y" must not re-download
-        proc = ExpectProc(`setsid -w -c $script 1.0.0`, 30)
-        pre = expect!(proc, "[y/N] ")
-        @test occursin("1.0.0 is already installed; make it the default and refresh its symlinks", pre)
-        println(proc, "y")
-        tail = expect!(proc, "Default 'julia' now points to 1.0.0")
-        @test !occursin("Downloading", tail)
-        @test success(proc)
-        @test readlink(joinpath(symlinkdir, "julia")) ==
-            joinpath(installdir, "julia-1.0.0/bin/julia")
+        # `setsid` without --ctty leaves the script with no controlling terminal,
+        # so confirm() cannot ask: it must decline, point at -y, and abort
+        mkpath(joinpath(fakejulia, "bin"))
+        out, err = IOBuffer(), IOBuffer()
+        p = run(pipeline(ignorestatus(`setsid -w $script remove 1.10.0`), stdout=out, stderr=err))
+        notty_err = String(take!(err))
+        @test p.exitcode == 1
+        @test occursin("no terminal available to confirm; exiting (pass -y to proceed non-interactively)", notty_err)
+        @test isdir(fakejulia)
+
+        # -y / --yes skip the prompt entirely, so removal proceeds with no terminal
+        for flag in ("-y", "--yes")
+            mkpath(joinpath(fakejulia, "bin"))
+            out, err = IOBuffer(), IOBuffer()
+            p = run(pipeline(ignorestatus(`setsid -w $script $flag remove 1.10.0`), stdout=out, stderr=err))
+            yes_err = String(take!(err))
+            @test p.exitcode == 0
+            @test !occursin("[y/N]", yes_err)
+            @test occursin("Removed julia-1.10.0", yes_err)
+            @test !isdir(fakejulia)
+        end
     end
-end
+    @testset "install prompt" begin
+        cleanup()
+        mr = fake_mirror("1.0.0")
+        # ExpectProc offers no per-process env (see the ENV comment at the top),
+        # so point the script at the fake mirror via the test process's own
+        # environment for the duration of this testset
+        withenv("INSTALL_JULIA_STABLE_URL" => "file://$mr",
+                "INSTALL_JULIA_NO_VERIFY" => "1") do
+            # answering "n" to a fresh install aborts before anything is downloaded
+            cmd = `setsid -w -c $script add 1.0.0`
+            proc = ExpectProc(cmd, 30)
+            @test occursin("Install 1.0.0 into", expect!(proc, "[y/N] "))
+            println(proc, "n")
+            expect!(proc, "Aborted.")
+            @test success(proc)
+            @test !isdir(joinpath(installdir, "julia-1.0.0"))
+
+            # answering "y" installs
+            proc = ExpectProc(cmd, 30)
+            expect!(proc, "[y/N] ")
+            println(proc, "y")
+            expect!(proc, "Installed 1.0.0")
+            @test success(proc)
+            @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+
+            # already installed, no --reinstall: the prompt offers a symlink
+            # refresh + default switch, and "y" must not re-download
+            proc = ExpectProc(`setsid -w -c $script 1.0.0`, 30)
+            pre = expect!(proc, "[y/N] ")
+            @test occursin("1.0.0 is already installed; make it the default and refresh its symlinks", pre)
+            println(proc, "y")
+            tail = expect!(proc, "Default 'julia' now points to 1.0.0")
+            @test !occursin("Downloading", tail)
+            @test success(proc)
+            @test readlink(joinpath(symlinkdir, "julia")) ==
+                joinpath(installdir, "julia-1.0.0/bin/julia")
+        end
+    end
+end  # if Sys.islinux() - prompt tests
 @testset "dependency checks" begin
     cleanup()
     # every hard dependency is checked up front, before any command runs; an
@@ -434,8 +445,10 @@ end
 end
 @testset "switch path handling" begin
     cleanup()
-    # spaces in the binary path must survive the link plumbing unsplit
-    dir = mktempdir()
+    # spaces in the binary path must survive the link plumbing unsplit.
+    # realpath so the relative-path case below matches the script's physical $PWD: on
+    # macOS mktempdir() returns a /var/... path that is a symlink to /private/var/...
+    dir = realpath(mktempdir())
     spacey = joinpath(dir, "fake julia dir")
     mkpath(spacey)
     bin = joinpath(spacey, "my julia")
@@ -535,11 +548,13 @@ end
     # it at GnuPG_jll's gpgv and let it do the real signature check on the mirror.
 
     # env pairs that force the script to verify with GnuPG_jll's gpgv: its binary path
-    # (via INSTALL_JULIA_GPGV) plus the LD_LIBRARY_PATH its bundled libs need.
+    # (via INSTALL_JULIA_GPGV) plus whatever loader-path var its bundled libs need -
+    # LD_LIBRARY_PATH on Linux
     gpgvenv = let
         local cmd = gpgv()
-        local libpath = only(split(v, '=', limit=2)[2] for v in cmd.env if startswith(v, "LD_LIBRARY_PATH="))
-        ("INSTALL_JULIA_GPGV" => only(cmd.exec), "LD_LIBRARY_PATH" => libpath)
+        local libs = [Pair(String.(split(v, '=', limit=2))...)
+                      for v in cmd.env if occursin("_LIBRARY_PATH=", v)]
+        ("INSTALL_JULIA_GPGV" => only(cmd.exec), libs...)
     end
 
     # a genuine signed tarball verifies and installs
@@ -1179,14 +1194,15 @@ end
     # manifest" status line load_table prints on a fresh resolve.
     @test occursin(r"Downloading \S+\.tar\.gz", r.err)   # fresh install downloads
 
-    # -y alone on an installed stable release: symlink refresh only - no
-    # re-download, and the installed tree itself is left untouched
+    # -y alone on an installed stable release: no re-download, and since the symlinks
+    # already point where they should, no redundant re-link either; the installed tree
+    # itself is left untouched
     marker = joinpath(installdir, "julia-1.0.0/MARKER")
     write(marker, "x")
     r = run_script_y("add", "1.0.0"; env)
     @test r.code == 0
     @test !occursin("Downloading", r.err)
-    @test occursin("symlink julia-1.0.0", r.err)
+    @test !occursin("symlink julia-1.0.0", r.err)
     @test isfile(marker)
 
     # auto re-download-and-replace takes BOTH -y and --reinstall
@@ -1197,59 +1213,63 @@ end
     @test !isfile(marker)   # the build was replaced wholesale
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
 end
-@testset "interrupted download" begin
-    cleanup()
-    mr = fake_mirror("1.0.0")
-    # a stalling curl shadowing the real one: it passes the versions.json fetch
-    # through to the real curl (so resolution completes and staging is created),
-    # then signals it was invoked and hangs like a dead network on the tarball
-    # download until the interrupt below kills it
-    farm = mktempdir()
-    sentinel = joinpath(farm, "curl-started")
-    fakecurl = joinpath(farm, "curl")
-    realcurl = Sys.which("curl")
-    # sleep 30 is only a backstop; the group SIGINT below kills it immediately
-    write(fakecurl, """#!/bin/sh
-    case "\$*" in
-        *versions.json*) exec $realcurl "\$@" ;;
-    esac
-    touch '$sentinel'
-    exec sleep 30
-    """)
-    chmod(fakecurl, 0o755)
+# Emulates a terminal ctrl-C via `setsid` + a group SIGINT (kill(-pgid)); `setsid` is
+# Linux-only, so skip this on other platforms.
+if Sys.islinux()
+    @testset "interrupted download" begin
+        cleanup()
+        mr = fake_mirror("1.0.0")
+        # a stalling curl shadowing the real one: it passes the versions.json fetch
+        # through to the real curl (so resolution completes and staging is created),
+        # then signals it was invoked and hangs like a dead network on the tarball
+        # download until the interrupt below kills it
+        farm = mktempdir()
+        sentinel = joinpath(farm, "curl-started")
+        fakecurl = joinpath(farm, "curl")
+        realcurl = Sys.which("curl")
+        # sleep 30 is only a backstop; the group SIGINT below kills it immediately
+        write(fakecurl, """#!/bin/sh
+        case "\$*" in
+            *versions.json*) exec $realcurl "\$@" ;;
+        esac
+        touch '$sentinel'
+        exec sleep 30
+        """)
+        chmod(fakecurl, 0o755)
 
-    # A terminal's ctrl-C sends SIGINT to the whole foreground process group.
-    # Emulate it exactly: setsid (not being a group leader itself) execs the
-    # script in place as the leader of a fresh group, so its pid is the group
-    # id, and kill(-pid) signals script and stalled curl at once.
-    _env = copy(ENV)
-    _env["INSTALL_JULIA_STABLE_URL"] = "file://$mr"
-    _env["INSTALL_JULIA_NO_VERIFY"] = "1"
-    _env["PATH"] = farm * ":" * ENV["PATH"]
-    cmd = pipeline(ignorestatus(setenv(`setsid $script -y add 1.0.0`, _env)),
-                   stdout=devnull, stderr=devnull)
-    p = run(cmd, wait=false)
-    @test timedwait(() -> isfile(sentinel), 10.0) == :ok   # download in flight
-    pgid = -getpid(p)   # negative pid: signal the whole group
-    @test @ccall(kill(pgid::Cint, Base.SIGINT::Cint)::Cint) == 0
-    wait(p)
-    @test p.termsignal == Base.SIGINT   # died from the signal, not an orderly exit
+        # A terminal's ctrl-C sends SIGINT to the whole foreground process group.
+        # Emulate it exactly: setsid (not being a group leader itself) execs the
+        # script in place as the leader of a fresh group, so its pid is the group
+        # id, and kill(-pid) signals script and stalled curl at once.
+        _env = copy(ENV)
+        _env["INSTALL_JULIA_STABLE_URL"] = "file://$mr"
+        _env["INSTALL_JULIA_NO_VERIFY"] = "1"
+        _env["PATH"] = farm * ":" * ENV["PATH"]
+        cmd = pipeline(ignorestatus(setenv(`setsid $script -y add 1.0.0`, _env)),
+                    stdout=devnull, stderr=devnull)
+        p = run(cmd, wait=false)
+        @test timedwait(() -> isfile(sentinel), 10.0) == :ok   # download in flight
+        pgid = -getpid(p)   # negative pid: signal the whole group
+        @test @ccall(kill(pgid::Cint, Base.SIGINT::Cint)::Cint) == 0
+        wait(p)
+        @test p.termsignal == Base.SIGINT   # died from the signal, not an orderly exit
 
-    # the interrupt left staging litter, but nothing half-installed at a
-    # claimable path and no symlinks
-    @test !isdir(joinpath(installdir, "julia-1.0.0"))
-    @test isdir(joinpath(installdir, ".incoming.julia-1.0.0"))
-    @test !isdir(symlinkdir)
+        # the interrupt left staging litter, but nothing half-installed at a
+        # claimable path and no symlinks
+        @test !isdir(joinpath(installdir, "julia-1.0.0"))
+        @test isdir(joinpath(installdir, ".incoming.julia-1.0.0"))
+        @test !isdir(symlinkdir)
 
-    # ...and the next install of the same version reaps it on the way through
-    r = run_script_y("add", "1.0.0"; env=(
-        "INSTALL_JULIA_STABLE_URL" => "file://$mr",
-        "INSTALL_JULIA_NO_VERIFY" => "1",
-    ))
-    @test r.code == 0
-    @test readdir(installdir) == ["julia-1.0.0"]   # no .incoming.*, no .old.*
-    @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
-end
+        # ...and the next install of the same version reaps it on the way through
+        r = run_script_y("add", "1.0.0"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+            "INSTALL_JULIA_NO_VERIFY" => "1",
+        ))
+        @test r.code == 0
+        @test readdir(installdir) == ["julia-1.0.0"]   # no .incoming.*, no .old.*
+        @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+    end
+end  # if Sys.islinux() - interrupted download
 @testset "nightly and pr" begin
     # A NIGHTLY_BASE-shaped fake mirror: a master nightly, a 1.11 branch
     # nightly, and a pr123 build (nightlies use the filename arch as the
@@ -1459,6 +1479,104 @@ end
         @test r.code == 0
         @test occursin("Resolved '1.0.0~$aliasname' -> 1.0.0~$aliasname (release)", r.err)
         @test isfile(joinpath(installdir, "julia-1.0.0~$aliasname/bin/julia"))
+    end
+end
+@testset "triplet override" begin
+    # INSTALL_JULIA_TRIPLET sets the target triplet directly, so any host can resolve
+    # macOS/FreeBSD (or any) builds. Stable resolution matches the manifest `triplet`
+    # field and follows the manifest url, so the os/arch a build is served under is
+    # irrelevant - only the triplet has to agree.
+    for trip in ("x86_64-apple-darwin14", "aarch64-apple-darwin14",
+                 "x86_64-unknown-freebsd11.1", "powerpc64le-linux-gnu",
+                 "x86_64-linux-musl")
+        cleanup()
+        mr = fake_mirror("1.0.0"; triplet=trip)
+        r = run_script_y("add", "1.0.0"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+            "INSTALL_JULIA_TRIPLET" => trip,
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 0
+        @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+    end
+
+    # nightly/PR download coordinates are derived FROM the triplet: the os segment of
+    # the url tracks the platform (linux | macos | freebsd) and the bucket/filename
+    # arch is the triplet's cputype.
+    for (trip, os, filearch) in (
+            ("x86_64-apple-darwin14",      "macos",   "x86_64"),
+            ("aarch64-apple-darwin14",     "macos",   "aarch64"),
+            ("x86_64-unknown-freebsd11.1", "freebsd", "x86_64"))
+        cleanup()
+        nmr = joinpath(mktempdir(), "mirror")
+        for (name, ver) in (
+            ("bin/$os/$filearch/julia-latest-$os-$filearch.tar.gz", "1.99.0-DEV"),
+            ("bin/$os/$filearch/1.11/julia-latest-$os-$filearch.tar.gz", "1.11.8-DEV"),
+            ("bin/$os/$filearch/julia-pr123-$os-$filearch.tar.gz", "1.98.0-DEV"))
+            mkpath(dirname(joinpath(nmr, name)))
+            write(joinpath(nmr, name), fake_tarball(ver))
+        end
+        env = ("INSTALL_JULIA_NIGHTLY_URL" => "file://$nmr",
+               "INSTALL_JULIA_TRIPLET" => trip,
+               "INSTALL_JULIA_NO_VERIFY" => "1")
+        r = run_script_y("nightly"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-nightly"))`, String) == "fake julia 1.99.0-DEV\n"
+        r = run_script_y("add", "1.11-nightly"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-1.11-nightly"))`, String) == "fake julia 1.11.8-DEV\n"
+        r = run_script_y("add", "pr123"; env)
+        @test r.code == 0
+        @test read(`$(joinpath(symlinkdir, "julia-pr123"))`, String) == "fake julia 1.98.0-DEV\n"
+    end
+
+    # a ~arch override swaps the cputype and rebuilds the triplet from the configured
+    # platform's os family, exactly as autodetection would: darwin stays darwin, and
+    # arm on linux picks gnueabihf (not a verbatim suffix swap, which would give -gnu).
+    for (base, arch, want) in (
+            ("x86_64-apple-darwin14", "aarch64", "aarch64-apple-darwin14"),
+            ("x86_64-linux-gnu",      "ppc64le", "powerpc64le-linux-gnu"),
+            ("x86_64-linux-gnu",      "armv8l",  "armv7l-linux-gnueabihf"))
+        cleanup()
+        mr = fake_mirror("1.0.0"; triplet=want)
+        r = run_script_y("add", "1.0.0~$arch"; env=(
+            "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+            "INSTALL_JULIA_TRIPLET" => base,
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 0
+        @test occursin("Resolved '1.0.0~$arch' -> 1.0.0~$arch (release)", r.err)
+        @test isfile(joinpath(installdir, "julia-1.0.0~$arch/bin/julia"))
+    end
+
+    # ~arch needs an os family the script knows how to re-form. A configured triplet
+    # whose os it can't form (a musl libc here; also Windows, a future os) installs
+    # fine on its own but is rejected when combined with ~arch, rather than guessing
+    # the suffix - and dies in resolve_spec, before any download.
+    cleanup()
+    r = run_script_y("add", "1.0.0~aarch64"; env=(
+        "INSTALL_JULIA_TRIPLET" => "x86_64-linux-musl",
+        "INSTALL_JULIA_NO_VERIFY" => "1"))
+    @test r.code == 1
+    @test r.err == "error: ~aarch64 override is not supported for triplet x86_64-linux-musl\n"
+    @test !isdir(installdir)
+
+    # a triplet whose os we can't map to a nightly url (a synthetic os here; in the
+    # wild this is Windows, whose nightlies ship only as .exe/.zip) resolves stable
+    # builds fine, but refuses nightly/PR specs - and does so in resolve_spec, before
+    # any download
+    cleanup()
+    mr = fake_mirror("1.0.0"; triplet="x86_64-w64-fakeos")
+    r = run_script_y("add", "1.0.0"; env=(
+        "INSTALL_JULIA_STABLE_URL" => "file://$mr",
+        "INSTALL_JULIA_TRIPLET" => "x86_64-w64-fakeos",
+        "INSTALL_JULIA_NO_VERIFY" => "1"))
+    @test r.code == 0
+    @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
+    for (spec, what) in (("nightly", "nightly"), ("1.11-nightly", "nightly"), ("pr123", "PR"))
+        r = run_script_y("add", spec; env=(
+            "INSTALL_JULIA_TRIPLET" => "x86_64-w64-fakeos",
+            "INSTALL_JULIA_NO_VERIFY" => "1"))
+        @test r.code == 1
+        @test r.err == "error: no $what builds for x86_64-w64-fakeos\n"
     end
 end
 @testset "manifest url layout" begin
