@@ -27,13 +27,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # macOS runners don't ship a gpgv for the script's signature check (the Linux
-      # runners already have one). Install GnuPG so the default, verifying install
-      # path is exercised on macOS too.
-      - name: Install gnupg (macOS)
-        if: runner.os == 'macOS'
-        run: brew install gnupg
-
       - name: Run install script with defaults
         run: sh src/install-julia.sh -y
 
