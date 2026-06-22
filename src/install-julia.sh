@@ -15,7 +15,7 @@ set -eu
 
 export LC_ALL=C
 
-SELF_VERSION="0.2.1-dev"
+SELF_VERSION="0.3.0"
 
 # --------------------------------------------------------------------------- #
 # Configuration                                                               #

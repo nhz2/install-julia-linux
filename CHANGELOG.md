@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [v0.3.0](https://github.com/nhz2/install-julia-linux/tree/v0.3.0) - 2026-06-22
+
 ### Added
 
 - macOS and FreeBSD are now supported alongside Linux. The target triplet is autodetected and can be set explicitly with the new `INSTALL_JULIA_TRIPLET` environment variable.
