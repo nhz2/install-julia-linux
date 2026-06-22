@@ -528,6 +528,20 @@ end
 
     # --reinstall takes the park-and-swap path and is just as clean
     r = run_script_y("--reinstall", "add", "1.0.0"; env)
+    # TEMP DIAGNOSTIC: on macOS this exits 1 though the install completes. Re-run the
+    # exact same reinstall under `sh -x` and dump the trace tail so we can see which
+    # command trips `set -e`. (1.0.0 is already installed at this point.)
+    if r.code != 0
+        let e = copy(ENV)
+            e["INSTALL_JULIA_STABLE_URL"] = "file://$mirror"
+            out, err = IOBuffer(), IOBuffer()
+            p = run(pipeline(ignorestatus(setenv(`sh -x $script -y --reinstall add 1.0.0`, e)),
+                             stdout=out, stderr=err))
+            tr = split(String(take!(err)), '\n')
+            @info "REINSTALL sh -x trace (exit=$(p.exitcode))"
+            println(stderr, join(tr[max(1, length(tr) - 50):end], '\n'))
+        end
+    end
     @test r.code == 0
     @test occursin("already installed; refreshing", r.err)
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
