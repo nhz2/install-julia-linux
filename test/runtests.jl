@@ -445,8 +445,10 @@ end
 end
 @testset "switch path handling" begin
     cleanup()
-    # spaces in the binary path must survive the link plumbing unsplit
-    dir = mktempdir()
+    # spaces in the binary path must survive the link plumbing unsplit.
+    # realpath so the relative-path case below matches the script's physical $PWD: on
+    # macOS mktempdir() returns a /var/... path that is a symlink to /private/var/...
+    dir = realpath(mktempdir())
     spacey = joinpath(dir, "fake julia dir")
     mkpath(spacey)
     bin = joinpath(spacey, "my julia")
