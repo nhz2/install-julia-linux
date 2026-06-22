@@ -27,7 +27,7 @@ NO_VERIFY=${INSTALL_JULIA_NO_VERIFY:-0}
 GPGV=${INSTALL_JULIA_GPGV:-}   # verifier command; empty autodetects gpgv or substitute in main
 TRIPLET_OVERRIDE=${INSTALL_JULIA_TRIPLET:-}   # target triplet; empty autodetects from uname (arch_setup)
 
-# The canonical bucket the manifest's download urls are written against. A mirror
+# The canonical bucket the release feed's download urls are written against. A mirror
 # may serve versions.json (from STABLE_BASE) while the urls inside still point here;
 # we accept a url under either base and re-root it on STABLE_BASE for the download.
 STABLE_OFFICIAL="https://julialang-s3.julialang.org"
@@ -111,7 +111,7 @@ ARCH_OS=""       # nightly-url os segment derived from the triplet: linux | maco
 ARCH_SUFFIX=""   # "~<arch>" tag appended to the label when ~arch was given ("" if autodetected)
 
 # Cached "<version> <url-suffix>" table for ARCH_TRIPLET, extracted by load_table. The
-# suffix is the manifest url with its (trusted) base stripped, ready to be re-rooted
+# suffix is the release feed url with its (trusted) base stripped, ready to be re-rooted
 # onto STABLE_BASE. The cached table is reused without re-fetching: a prefix spec reads
 # it twice (find the greatest compatible version, then look up that version's url), an
 # exact version reads it once.
@@ -434,7 +434,7 @@ arch_setup() {
 }
 
 # --------------------------------------------------------------------------- #
-# Stable release discovery (versions.json manifest)                           #
+# Stable release discovery (versions.json release feed)                       #
 # --------------------------------------------------------------------------- #
 
 # Escape regex metacharacters (dots) in a version prefix.
@@ -474,11 +474,11 @@ load_table() {
 		*) : ;;
 	esac
 	# Its own line so we get a nice error message if there is a network issue
-	info "Downloading versions manifest from $STABLE_BASE/bin/versions.json"
-	_TABLE_JSON_MANIFEST=$(http_get "$STABLE_BASE/bin/versions.json") ||
+	info "Downloading release feed from $STABLE_BASE/bin/versions.json"
+	_TABLE_JSON_FEED=$(http_get "$STABLE_BASE/bin/versions.json") ||
 		die "could not fetch $STABLE_BASE/bin/versions.json (network/HTTP error)"
 	VERSION_URL_TABLE=$(
-		printf '%s' "$_TABLE_JSON_MANIFEST" |
+		printf '%s' "$_TABLE_JSON_FEED" |
 		tr -d '\n\r' |
 		STABLE_OFFICIAL="$STABLE_OFFICIAL" STABLE_BASE="$STABLE_BASE" VERSION_SEARCH_FILTER="$VERSION_SEARCH_FILTER" awk -v triplet="$ARCH_TRIPLET" -v RS="}" '
 	BEGIN {
@@ -537,11 +537,11 @@ load_table() {
 	)
 }
 
-# manifest_select -> the cached "<version> <url-suffix>" table, one row per installable
+# feed_select -> the cached "<version> <url-suffix>" table, one row per installable
 # build for ARCH_TRIPLET matching VERSION_SEARCH_FILTER. Callers MUST run load_table
 # first (on its own line, so a fetch error is not swallowed inside their pipeline).
 # Empty table prints nothing.
-manifest_select() {
+feed_select() {
 	[ -n "$VERSION_URL_TABLE" ] || return 0
 	printf '%s\n' "$VERSION_URL_TABLE"
 }
@@ -556,7 +556,7 @@ manifest_select() {
 # `_full=$(pick_latest)` assignment before the caller's own `[ -n "$_full" ]` guard
 # could emit a helpful message.
 pick_latest() {
-	manifest_select | awk '{ print $1 }' | version_max
+	feed_select | awk '{ print $1 }' | version_max
 }
 
 # --------------------------------------------------------------------------- #
@@ -564,7 +564,7 @@ pick_latest() {
 # --------------------------------------------------------------------------- #
 
 # Resolve the stable download URL for a known full version (e.g. 1.12.6) by looking
-# it up in the manifest, NOT by constructing the path - so a bucket reorg under
+# it up in the release feed, NOT by constructing the path - so a bucket reorg under
 # /bin/ needs no script edit.
 resolve_stable_full() {
 	_full=$1
@@ -572,9 +572,9 @@ resolve_stable_full() {
 	is_version "$_full" || die "$_full is not a valid version"
 	# Take the url-suffix of the row whose version equals _full exactly. The suffix
 	# already passed load_table's trust gate (known base stripped, narrow /bin/... shape),
-	# so just re-root it onto STABLE_BASE to honor a mirror without trusting the manifest
-	# host. get_url guarantees a non-empty suffix, so empty means no matching row.
-	_resolve_stable_full_suffix=$(manifest_select | awk -v v="$_full" '$1 == v { print $2; exit }')
+	# so just re-root it onto STABLE_BASE to honor a mirror without trusting the release
+	# feed host. get_url guarantees a non-empty suffix, so empty means no matching row.
+	_resolve_stable_full_suffix=$(feed_select | awk -v v="$_full" '$1 == v { print $2; exit }')
 	[ -n "$_resolve_stable_full_suffix" ] || die "no $ARCH_TRIPLET archive for $_full in versions.json"
 	R_URL="$STABLE_BASE$_resolve_stable_full_suffix"
 	R_KIND=release
