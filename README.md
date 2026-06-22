@@ -18,19 +18,22 @@ curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/
 ## Install the script for ongoing version management
 
 ```sh
-curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh   # or just copy the file
+curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh
 chmod +x install-julia.sh
-mv install-julia.sh ~/.local/bin/                  # somewhere on your PATH
+mv install-julia.sh ~/.local/bin/
 ```
 
-Make sure your symlink directory (default `~/.local/bin`) is on your `PATH`.
+This downloads the script (you can also just copy the file), makes it executable, and moves it to `~/.local/bin`. Make sure that directory is on your `PATH`.
 
 ## Quick start
 
 ```sh
-install-julia.sh                # install the latest stable Julia, make it default
-julia                           # ...now on your PATH
+install-julia.sh
+julia
 ```
+
+The first command installs the latest stable Julia and makes it the default;
+`julia` is then on your `PATH`.
 
 ## Other examples
 
