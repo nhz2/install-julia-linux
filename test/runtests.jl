@@ -548,11 +548,13 @@ end
     # it at GnuPG_jll's gpgv and let it do the real signature check on the mirror.
 
     # env pairs that force the script to verify with GnuPG_jll's gpgv: its binary path
-    # (via INSTALL_JULIA_GPGV) plus the LD_LIBRARY_PATH its bundled libs need.
+    # (via INSTALL_JULIA_GPGV) plus whatever loader-path var its bundled libs need -
+    # LD_LIBRARY_PATH on Linux
     gpgvenv = let
         local cmd = gpgv()
-        local libpath = only(split(v, '=', limit=2)[2] for v in cmd.env if startswith(v, "LD_LIBRARY_PATH="))
-        ("INSTALL_JULIA_GPGV" => only(cmd.exec), "LD_LIBRARY_PATH" => libpath)
+        local libs = [Pair(String.(split(v, '=', limit=2))...)
+                      for v in cmd.env if occursin("_LIBRARY_PATH=", v)]
+        ("INSTALL_JULIA_GPGV" => only(cmd.exec), libs...)
     end
 
     # a genuine signed tarball verifies and installs
