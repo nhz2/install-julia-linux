@@ -18,19 +18,22 @@ curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/
 ## Install the script for ongoing version management
 
 ```sh
-curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh   # or just copy the file
+curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.2.0/install-julia.sh
 chmod +x install-julia.sh
-mv install-julia.sh ~/.local/bin/                  # somewhere on your PATH
+mv install-julia.sh ~/.local/bin/
 ```
 
-Make sure your symlink directory (default `~/.local/bin`) is on your `PATH`.
+This downloads the script (you can also just copy the file), makes it executable, and moves it to `~/.local/bin`. Make sure that directory is on your `PATH`.
 
 ## Quick start
 
 ```sh
-install-julia.sh                # install the latest stable Julia, make it default
-julia                           # ...now on your PATH
+install-julia.sh
+julia
 ```
+
+The first command installs the latest stable Julia and makes it the default;
+`julia` is then on your `PATH`.
 
 ## Other examples
 
@@ -41,7 +44,6 @@ install-julia.sh add 1.10              # install 1.10.x without changing the def
 install-julia.sh add nightly           # add the master nightly
 install-julia.sh add pre               # add the latest prerelease or stable
 install-julia.sh switch 1.10           # make 1.10.x the default julia
-install-julia.sh switch ~/build/julia/usr/bin/julia   # point julia at a custom build
 install-julia.sh remove 1.10           # delete all 1.10.*
 install-julia.sh list                  # show what's installed
 ```
@@ -167,6 +169,16 @@ switches the default), after a confirmation prompt that says so. Pass `--reinsta
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
 Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
 label.
+
+### Uninstallation
+
+Use `install-julia.sh remove <version>` to delete a single version along with
+its symlinks. To uninstall
+everything, delete the install directory (`INSTALL_JULIA_INSTALL_DIR`, default
+`~/packages/julias`) and remove the `julia*` symlinks from the symlink
+directory (`INSTALL_JULIA_SYMLINK_DIR`, default `~/.local/bin`). Also delete the
+`install-julia.sh` script itself if you installed it (e.g. `~/.local/bin/install-julia.sh`).
+If you would also like to remove your packages and other configuration, remove `~/.julia`.
 
 ## Verification
 

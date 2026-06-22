@@ -377,19 +377,30 @@ end  # if Sys.islinux() - prompt tests
     @test r.code == 1
     @test r.err == "error: required command not found: curl\n"
 
-    # a PATH with the always-on tools but no gpgv/gpgv2: verification needs one...
+    # a PATH with the always-on tools but no gpgv/gpgv2: verification needs one,
+    # and with none found we print the GnuPG install guidance (gpgv ships with
+    # GnuPG, whose package is `gnupg` on macOS/FreeBSD - the common confusion).
     farm = mktempdir()
     for tool in ("curl", "tar", "mktemp", "readlink")
         symlink(Sys.which(tool), joinpath(farm, tool))
     end
+    no_verifier_err = """
+        error: no signature verifier found (need gpgv or gpgv2)
+        Julia binaries are verified with GPG; install GnuPG to get a verifier:
+          macOS (Homebrew):  brew install gnupg
+          FreeBSD:           pkg install gnupg
+        Already have one elsewhere? Point at it with INSTALL_JULIA_GPGV=/path/to/gpgv
+        Or skip verification (NOT recommended) with INSTALL_JULIA_NO_VERIFY=1
+        """
     r = run_script("list"; env=("PATH" => farm,))
     @test r.code == 1
-    @test r.err == "error: required command not found: gpgv (or gpgv2)\n"
+    @test r.err == no_verifier_err
 
-    # if INSTALL_JULIA_GPGV is set to a nonexisting command it still errors
+    # if INSTALL_JULIA_GPGV is set to a nonexisting command it names the override
+    # (the user chose it) rather than the generic install hint
     r = run_script("list"; env=("PATH" => farm, "INSTALL_JULIA_GPGV" => "non_existing_gpgv",))
     @test r.code == 1
-    @test r.err == "error: required command not found: non_existing_gpgv\n"
+    @test r.err == "error: required command not found: non_existing_gpgv (set via INSTALL_JULIA_GPGV)\n"
 
     # ...but NO_VERIFY=1 drops that requirement, and `list` with nothing
     # installed needs no external tools at all (and prints nothing)
