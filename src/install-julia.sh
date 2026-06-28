@@ -725,6 +725,11 @@ link() {
 	# -T), so rename replaces an existing NAME without dereferencing it. A hard kill can
 	# leak a .link.* scratch dir; never reaped (may be a live peer's), but tiny and hidden.
 	mkdir -p "$SYMLINK_DIR"
+	# Only a symlink at NAME is ours to replace. A real directory or regular file there
+	# is a user-placed obstruction (peers only ever create symlinks).
+	if [ -e "$SYMLINK_DIR/$1" ] && [ ! -L "$SYMLINK_DIR/$1" ]; then
+		die "cannot create symlink $1: $SYMLINK_DIR/$1 exists and is not a symlink; remove it and retry"
+	fi
 	_lnk=$(mktemp -d "$SYMLINK_DIR/.link.XXXXXXXXXX") ||
 		die "could not create scratch dir in $SYMLINK_DIR"
 	if ! ln -s "$2" "$_lnk/$1"; then
@@ -756,12 +761,15 @@ raise_rollup() {
 	while [ "$_i" -lt 100 ]; do
 		_cur=$(readlink "$SYMLINK_DIR/$1" 2>/dev/null | sed -n 's#.*/julia-\(.*\)/bin/julia$#\1#p')
 		[ -e "$SYMLINK_DIR/$1" ] && [ -n "$_cur" ] &&
-			[ "$(printf '%s\n%s\n' "$_cur" "$2" | version_max)" = "$_cur" ] && break
+			[ "$(printf '%s\n%s\n' "$_cur" "$2" | version_max)" = "$_cur" ] && return 0
 		# A failed link (e.g. a peer raced us to the same target, which macOS mv refuses)
 		# is fine: the next iteration re-reads and either sees it is now done or retries.
 		link "$1" "$INSTALL_DIR/julia-$2/bin/julia" || :
 		_i=$((_i + 1))
 	done
+	# Exhausted every retry without the link resolving to VER-or-newer
+	# Fail loudly rather than report a success we didn't achieve.
+	die "could not create rollup symlink $1"
 }
 
 set_default() { linked_to "julia" "$1" || link "julia" "$1" || linked_to "julia" "$1" || die "could not create symlink julia"; }

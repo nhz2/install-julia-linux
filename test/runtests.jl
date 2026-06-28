@@ -458,6 +458,28 @@ end
     @test isempty(readdir(trapdir))   # nothing was created inside the directory
     @test isempty(filter(startswith("."), readdir(symlinkdir)))   # no .link.* scratch left
 end
+@testset "rollup over a non-symlink" begin
+    # Only a symlink at a rollup name (julia-1) is ours to replace. If a real
+    # directory or regular file already sits there, link() must refuse up front
+    # with an actionable message - never silently overwrite a user's file, never
+    # spin raise_rollup's retry loop on an mv that can't replace a directory, and
+    # never exit 0 claiming success while the rollup is left uncreated.
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mirror",)
+    setups = (("empty directory",      trap -> mkpath(trap)),
+              ("directory with files",  trap -> (mkpath(trap); write(joinpath(trap, "afile"), "x"))),
+              ("regular file",          trap -> write(trap, "i am not a symlink")))
+    for (desc, make) in setups
+        cleanup()
+        mkpath(symlinkdir)
+        trap = joinpath(symlinkdir, "julia-1")
+        make(trap)
+        r = run_script_y("add", "1.0.0"; env)
+        @test r.code != 0                                # can't create the rollup -> failure ($desc)
+        @test occursin("julia-1 exists and is not a symlink", r.err)
+        @test count("cannot overwrite directory", r.err) == 0   # bailed before attempting the mv
+        @test ispath(trap) && !islink(trap)              # the user's path is left untouched
+    end
+end
 @testset "switch path handling" begin
     cleanup()
     # spaces in the binary path must survive the link plumbing unsplit.
