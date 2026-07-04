@@ -95,6 +95,37 @@ cgYU
 EOF
 }
 
+# The new official Julia binary signing key, dearmored to a binary keyring for gpgv.
+# Fingerprint: 64B779A570972FFF7BFC2B54EAD471E1A1F2C10A
+# Source : https://discourse.julialang.org/t/psa-all-ci-services-temporarily-halted/137559/9
+# Date   : 2026-07-03
+# Key    : Julia Release Signing Key <buildbot@julialang.org>
+new_julia_keyring() {
+	base64 -d <<'EOF'
+xsFNBGoseh4BEADemCYuKp7uLR304Eij5hYPXHhl0FuOsOvWBJJal89SYRp0r7ixuxkotCtMeQLB
+jj3n/sDFRYORT7Hil0Aylp58J4ZInHJutmpEm2V/AijyLcrmeGXJQiCF3rJzFyTgr7MAXwzpq7Kt
+mJlXZQzGUknsnNs9PzLFm81qvchpsmW1ZE8pOzz+wOItlN7HnbZpdmQwRPRkp5X+FePqT4ICci/Z
+N88SkqE5gHStxPvUbm8Vlg4CJ6bpTG7HnXda6X1CWCa/5+Z0PwsThHipZ1Yv/Snxm5V3BmI5LiqQ
+bESyGezRs96wbBOIo2VTqp6yvGCt85XNGGsmuH+L69lEzdN8SxQwPN8rS2OBocWilGabl/RtfIzK
+LH16PmrfAuuNzA+TGFpztoFMZVt3jCL0CWNJALM9vd/vevuhuTlyXZ9JjbYplEQFy0e+9IHvXCsY
+B1MKPmL8ZlbVqRJ0niTsfCDs8+H2dO2md/x5JJPBY58nk+wFnTEmV/sNWX5f6CrZUfFeGmmXoRpd
+bodtx0p7zrYi9kC6hUYS+wffsNeAkz3wWQ9bOPRrWUgaxwPln8CVQcnlQF37NiEHgtg/xF6HOE15
+IkVR6x+JfrrmjHslhX5YLvRLAYCFUPmbr87tVdFkCafwitTh58rvY3ZeF/WHdUuqmrtweFRRjICa
+3qQAvACh94QiuwARAQABzTJKdWxpYSBSZWxlYXNlIFNpZ25pbmcgS2V5IDxidWlsZGJvdEBqdWxp
+YWxhbmcub3JnPsLBdgQTAQgAIBYhBGS3eaVwly//e/wrVOrUceGh8sEKBQJqLHoeAhsDAAoJEOrU
+ceGh8sEKe1YP/23Qp9jFyLhyK+OKkGvt+REgKSB4UKOTxpsc4HvUFvUUB4Mb9AjBdzUPGavOSMbk
+DytZNz7yFrb/rWfwd5tgMP973xBYzipztIj3MsQC8X7Qg8sSrxdh37+2G4di34/AIo0HuPIGwne9
+hJXxyPa+Opj8DR7K8dC+aeMOydewUVoNQhz4Wnuir+LryM4Ubs0+pWYTTU51tj8ADgirWDz84Zaj
+LwANAPkYNdgsfnk7eV05/gc3GC8ygahSZgTfnwojwvKoFfLDsM6z0zjTryoJY68xe3NYh59kdEN0
+W8jKw3OJGMcXT82zckNSwAEIJOdMaqauRAHeGJ/kPovyy3enxsq8VKA9eBAxlmlUcuodnLCZHI+d
+g/VKMUPegMuvyaZnY2VAHBmONKX4jpeMZYbRYfyXa2InixN/hcaaA3g/90yevCH+GNmN1MaXfkjI
+SUdsMvLQMixVeQ0/tm+SHSopFwTJtuzEaAyyNAkLL4U1iRRSMwW1BaJrc943PhBQ4ytkWJhm0ge1
+e2qRB3SSKYzoOTji98hA/hUPmt8ZO+yb8FngJXbw+fa+onWVxbGp8AO8+TNvJb89iuCC/VoMtf9s
+dSnZ85Zj3+jJk+aVauQHohgfwVOXeBjaNN1vJCy+1efZArpk6d6H94ZeCMLnEzxzVQz+3AF1BgZV
+QNF8hPD2qiK0
+EOF
+}
+
 NO_CONFIRM=0
 REINSTALL=0
 
@@ -612,8 +643,11 @@ verify_sig() {
 
 	_keyring="$_file.keyring"
 	julia_keyring >"$_keyring" || die "could not materialize signing keyring"
+	_newkeyring="$_file.newkeyring"
+	new_julia_keyring >"$_newkeyring" || die "could not materialize signing keyring"
 
-	"$GPGV" --keyring "$_keyring" "$_asc" "$_file" >/dev/null ||
+	# A signature from a key in either keyring verifies (key rotation).
+	"$GPGV" --keyring "$_keyring" --keyring "$_newkeyring" "$_asc" "$_file" >/dev/null ||
 		die "signature verification FAILED for $(basename "$_file") - refusing to install"
 }
 
