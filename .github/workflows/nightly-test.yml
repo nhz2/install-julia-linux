@@ -1,9 +1,6 @@
 name: Install test
 
-# Smoke test: run the install script non-interactively (-y) with all defaults on
-# x86_64 and aarch64 Linux runners and on real macOS (Apple Silicon and Intel),
-# then confirm the installed `julia` actually runs. This does not run
-# test/runtests.jl - it only exercises a plain default install.
+# Smoke test: run the nightly install script non-interactively (-y) on Linux
 
 on:
   push:
@@ -20,15 +17,12 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
-          - ubuntu-24.04-arm
-          - macos-latest
-          - macos-15-intel
 
     steps:
       - uses: actions/checkout@v7
 
-      - name: Run install script with defaults
-        run: sh src/install-julia.sh -y
+      - name: Run install script with nightly version
+        run: sh src/install-julia.sh nightly -y
 
       # The script links into $HOME/.local/bin, which isn't on PATH by default on
       # the runner. Add it for subsequent steps so `julia` resolves.

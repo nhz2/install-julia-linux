@@ -20,7 +20,7 @@ jobs:
           - macos-15-intel
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Install the Julia version test/Manifest.toml was resolved with.
       - name: Install Julia with the script (manifest mode)
