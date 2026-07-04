@@ -182,13 +182,14 @@ If you would also like to remove your packages and other configuration, remove `
 
 ## Verification
 
-Every download is verified with GPG (via `gpgv`) against Julia's official
-signing key, which is bundled in the script. If a
+Every download is verified with GPG against
+Julia's official signing keys, which are bundled in the script. A signature
+from either the old or the new (2026) release signing key is accepted. If a
 signature is missing or doesn't verify, the install is aborted.
 
 PR builds are the exception: Julia publishes no signature for them, so the check
 is skipped with a warning. Set `INSTALL_JULIA_NO_VERIFY=1` to skip verification
-entirely (then `gpgv` isn't required).
+entirely (then no verifier is required).
 
 ## AI usage
 

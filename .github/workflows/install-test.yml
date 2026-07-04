@@ -1,9 +1,9 @@
 name: Install test
 
-# Smoke test: run the install script non-interactively (-y) with all defaults on
+# Smoke test: run the install script non-interactively (-y) on
 # x86_64 and aarch64 Linux runners and on real macOS (Apple Silicon and Intel),
 # then confirm the installed `julia` actually runs. This does not run
-# test/runtests.jl - it only exercises a plain default install.
+# test/runtests.jl - it only exercises a plain install.
 
 on:
   push:
@@ -25,10 +25,36 @@ jobs:
           - macos-15-intel
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Run install script with defaults
         run: sh src/install-julia.sh -y
+
+      # The script links into $HOME/.local/bin, which isn't on PATH by default on
+      # the runner. Add it for subsequent steps so `julia` resolves.
+      - name: Add symlink dir to PATH
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check julia runs
+        run: |
+          julia --version
+          julia -e 'using InteractiveUtils; versioninfo()'
+  versions-install:
+    name: install (${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - 'nightly'
+          - '1'
+          - '1.10'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run install script
+        run: sh src/install-julia.sh ${{ matrix.version }} -y
 
       # The script links into $HOME/.local/bin, which isn't on PATH by default on
       # the runner. Add it for subsequent steps so `julia` resolves.
