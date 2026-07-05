@@ -818,9 +818,8 @@ set_default() { linked_to "julia" "$1" || link "julia" "$1" || linked_to "julia"
 # releases, prereleases, the branch nightly, and ALL arches - so `remove 1.12`
 # clears the whole 1.12 line (1.12.x, 1.12.x-rcN, 1.12-nightly, and any ~arch copy).
 # Matching is on component boundaries, so `1.1` never catches `1.10.0`. A bare `pr`
-# sweeps every PR build. Any other
-# fully-qualified id are matched only
-# by exact name. Nonzero if nothing matches.
+# sweeps every PR build. Any other fully-qualified id is matched only by exact
+# name. Nonzero if nothing matches.
 match_installed() {
 	case "$1" in
 		pr)
@@ -920,9 +919,8 @@ cmd_install() {
 			# PR builds live in the ephemeral PR bucket, keyed by commit:
 			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os>-<arch>.tar.gz
 			# The spec carries the PR build's full 40-char commit sha to avoid
-			# depending on git or github API. 
-			# Uppercase hex is accepted and lowercased to match
-			# the bucket key.
+			# depending on git or the github API. Uppercase hex is accepted and
+			# lowercased to match the bucket key.
 			_pr_sha=$(printf '%s' "${_spec#pr}" | tr 'A-F' 'a-f')
 			case "$_pr_sha" in
 				*[!0-9a-f]*) die "bad pr spec: $_spec (expected pr<full 40-char commit sha>)" ;;
