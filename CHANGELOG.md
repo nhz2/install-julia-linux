@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [v0.4.0](https://github.com/nhz2/install-julia-linux/tree/v0.4.0) - 2026-07-04
+
 ### Added
 
 - `install-julia.sh remove pr` deletes every installed PR build.
+- `sqv` is supported as a signature verifier.
+- The new julia release key is added from https://discourse.julialang.org/t/psa-all-ci-services-temporarily-halted/137559/9
+  The old key is still included but will be removed in a future release.
 
 ### Changed
 
