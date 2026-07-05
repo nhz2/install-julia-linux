@@ -1269,7 +1269,7 @@ Environment variables:
   INSTALL_JULIA_NO_VERIFY     set to 1 to skip GPG verification
                               (default: 0)
   INSTALL_JULIA_GPGV          force a specific signature-verification command
-                              (default: autodetect gpgv/gpgv2)
+                              (default: autodetect gpgv/gpgv2/sqv)
   INSTALL_JULIA_TRIPLET       target triplet to install for, e.g.
                               x86_64-linux-gnu or aarch64-apple-darwin14
                               (default: autodetect from uname)
@@ -1314,7 +1314,7 @@ main() {
 	need mktemp
 	if [ "$NO_VERIFY" != 1 ]; then
 		# Resolve the GPG signature verifier: the INSTALL_JULIA_GPGV override if
-		# set, otherwise gpgv or gpgv2 from PATH (all share the
+		# set, otherwise gpgv, gpgv2, sqv from PATH (all share the
 		# `--keyring KEYRING SIG FILE` interface).
 		if [ -n "$GPGV" ]; then
 			# The user pointed INSTALL_JULIA_GPGV at this command; if it isn't
@@ -1325,13 +1325,15 @@ main() {
 			GPGV=gpgv
 		elif have gpgv2; then
 			GPGV=gpgv2
+		elif have sqv; then
+			GPGV=sqv
 		else
 			# gpgv ships as part of GnuPG; on macOS and FreeBSD it is usually not
 			# installed by default, and the package that provides it is `gnupg`,
 			# not `gpgv` - the most common point of confusion - so spell out the
 			# per-platform install command rather than just naming the binary.
 			printf '%s\n' \
-				'error: no signature verifier found (need gpgv or gpgv2)' \
+				'error: no signature verifier found (need gpgv, gpgv2, or sqv)' \
 				'Julia binaries are verified with GPG; install GnuPG to get a verifier:' \
 				'  macOS (Homebrew):  brew install gnupg' \
 				'  FreeBSD:           pkg install gnupg' \
