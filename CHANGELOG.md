@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+
+- `install-julia.sh remove pr` deletes every installed PR build.
+
+### Changed
+
+- PR builds now download from Julia's new ephemeral PR bucket (`https://julialang-ephemeral-pr.s3.amazonaws.com`, overridable with the new `INSTALL_JULIA_PR_URL` environment variable). The version specifier is now the full 40-char commit sha (e.g. `pr4d42a1b8c138fd80ce23624c43185bcf7051c6f2`, installed as `julia-pr4d42a1b8c1`) instead of `pr<number>`, which now fails.
+
 ## [v0.3.0](https://github.com/nhz2/install-julia-linux/tree/v0.3.0) - 2026-06-22
 
 ### Added
