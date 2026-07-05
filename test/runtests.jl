@@ -381,7 +381,7 @@ end  # if Sys.islinux() - prompt tests
     @test r.code == 1
     @test r.err == "error: required command not found: curl\n"
 
-    # a PATH with the always-on tools but no gpgv/gpgv2: verification needs one,
+    # a PATH with the always-on tools but no gpgv/gpgv2/sqv: verification needs one,
     # and with none found we print the GnuPG install guidance (gpgv ships with
     # GnuPG, whose package is `gnupg` on macOS/FreeBSD - the common confusion).
     farm = mktempdir()
@@ -389,7 +389,7 @@ end  # if Sys.islinux() - prompt tests
         symlink(Sys.which(tool), joinpath(farm, tool))
     end
     no_verifier_err = """
-        error: no signature verifier found (need gpgv or gpgv2)
+        error: no signature verifier found (need gpgv, gpgv2, or sqv)
         Julia binaries are verified with GPG; install GnuPG to get a verifier:
           macOS (Homebrew):  brew install gnupg
           FreeBSD:           pkg install gnupg
@@ -414,7 +414,15 @@ end  # if Sys.islinux() - prompt tests
 
     # ...and gpgv2 satisfies it when gpgv is absent (base64 is then the next
     # missing dependency, proving the gpgv check passed)
-    symlink(something(Sys.which("gpgv"), Sys.which("gpgv2")), joinpath(farm, "gpgv2"))
+    symlink(something(Sys.which("gpgv"), Sys.which("gpgv2"), Sys.which("sqv")), joinpath(farm, "gpgv2"))
+    r = run_script("list"; env=("PATH" => farm,))
+    @test r.code == 1
+    @test r.err == "error: required command not found: base64\n"
+
+    # ...and sqv satisfies it when gpgv is absent (base64 is then the next
+    # missing dependency, proving the gpgv check passed)
+    rm(joinpath(farm, "gpgv2"))
+    symlink(something(Sys.which("gpgv"), Sys.which("gpgv2"), Sys.which("sqv")), joinpath(farm, "sqv"))
     r = run_script("list"; env=("PATH" => farm,))
     @test r.code == 1
     @test r.err == "error: required command not found: base64\n"
@@ -582,7 +590,7 @@ end
 end
 @testset "verifier override" begin
     # INSTALL_JULIA_GPGV forces a specific verifier ahead of autodetection.
-    gpgvenv = "INSTALL_JULIA_GPGV" => something(Sys.which("gpgv"), Sys.which("gpgv2"))
+    gpgvenv = "INSTALL_JULIA_GPGV" => something(Sys.which("gpgv"), Sys.which("gpgv2"), Sys.which("sqv"))
 
     # a genuine signed tarball verifies and installs
     cleanup()
