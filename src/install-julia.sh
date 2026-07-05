@@ -36,7 +36,8 @@ STABLE_OFFICIAL="https://julialang-s3.julialang.org"
 # pointed at a mirror or a private cache. Trailing slashes are stripped.
 STABLE_BASE=${INSTALL_JULIA_STABLE_URL:-"$STABLE_OFFICIAL"}
 NIGHTLY_BASE=${INSTALL_JULIA_NIGHTLY_URL:-"https://julialangnightlies-s3.julialang.org"}
-STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}
+PR_BASE=${INSTALL_JULIA_PR_URL:-"https://julialang-ephemeral-pr.s3.amazonaws.com"}
+STABLE_BASE=${STABLE_BASE%/}; NIGHTLY_BASE=${NIGHTLY_BASE%/}; PR_BASE=${PR_BASE%/}
 
 # The official Julia binary signing key, dearmored to a binary keyring for gpgv.
 # Fingerprint: 3673DF529D9049477F76B37566E3C7DC03D6E495
@@ -131,7 +132,7 @@ REINSTALL=0
 
 # Resolver output:
 R_KIND=""      # release | nightly | pr
-R_LABEL=""     # short symlink id, e.g. 1.12.6 / nightly / 1.11-nightly / pr1234
+R_LABEL=""     # short symlink id, e.g. 1.12.6 / nightly / 1.11-nightly / pr4d42a1b8c1
 R_URL=""       # tarball download URL
 R_ROLLUP=0     # 1 if this is a plain stable release eligible for X.Y / X rollups
 
@@ -711,7 +712,7 @@ install_resolved() {
 	# one, so a hostile endpoint could serve a different (older, still-signed) release
 	# than requested. For stable/prerelease builds the tarball dir IS the version, so
 	# require it to equal the resolved label (sans any ~arch tag); fail closed on a
-	# mismatch or a missing version. Rolling builds (nightly/pr) carry a fluid
+	# mismatch or a missing version. Nightly and PR builds carry a fluid
 	# dev version with no such invariant, so the binding doesn't apply to them.
 	if [ "$R_KIND" = release ]; then
 		_want=${R_LABEL%"$ARCH_SUFFIX"}
@@ -816,11 +817,24 @@ set_default() { linked_to "julia" "$1" || link "julia" "$1" || linked_to "julia"
 # A pure-numeric prefix (1, 1.12, 1.12.6) sweeps every build under it --
 # releases, prereleases, the branch nightly, and ALL arches - so `remove 1.12`
 # clears the whole 1.12 line (1.12.x, 1.12.x-rcN, 1.12-nightly, and any ~arch copy).
-# Matching is on component boundaries, so `1.1` never catches `1.10.0`. The master
-# nightly and pr builds carry no numeric prefix, so they (and any fully-
-# qualified id) are matched only by exact name. Nonzero if nothing matches.
+# Matching is on component boundaries, so `1.1` never catches `1.10.0`. A bare `pr`
+# sweeps every PR build. Any other fully-qualified id is matched only by exact
+# name. Nonzero if nothing matches.
 match_installed() {
 	case "$1" in
+		pr)
+			# Bare `pr` sweeps every installed PR build: the script only ever
+			# creates julia-pr* dirs for PR installs (pr<10-char sha>, legacy
+			# pr<number>, and their ~arch copies).
+			_hits=$(ls "$INSTALL_DIR" 2>/dev/null |
+				while IFS= read -r _id; do
+					case "${_id}" in
+						# some problematic characters are filtered
+						(*[!0-9A-Za-z.~_+-]*) : ;;
+						(julia-pr*) printf '%s\n' "$_id" ;;
+					esac
+				done)
+			[ -n "$_hits" ] && { printf '%s\n' "$_hits"; return 0; } ;;
 		*[!0-9.]*) ;;   # not pure-numeric -> exact match only (handled below)
 		*)
 			# Pure-numeric prefix: sweep every build whose version starts with it
@@ -901,13 +915,22 @@ cmd_install() {
 			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
-		pr[0-9]*)
-			# Require the whole tail to be digits (the glob only pins the first)
-			is_digits "${_spec#pr}" || die "bad pr spec: $_spec (expected pr<number>)"
+		pr[0-9A-Fa-f][0-9A-Fa-f]*)
+			# PR builds live in the ephemeral PR bucket, keyed by commit:
+			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os>-<arch>.tar.gz
+			# The spec carries the PR build's full 40-char commit sha to avoid
+			# depending on git or the github API. Uppercase hex is accepted and
+			# lowercased to match the bucket key.
+			_pr_sha=$(printf '%s' "${_spec#pr}" | tr 'A-F' 'a-f')
+			case "$_pr_sha" in
+				*[!0-9a-f]*) die "bad pr spec: $_spec (expected pr<full 40-char commit sha>)" ;;
+				*) [ "${#_pr_sha}" -eq 40 ] || die "bad pr spec: $_spec (expected pr<full 40-char commit sha>)" ;;
+			esac
 			[ -n "$ARCH_OS" ] || die "no PR builds for $ARCH_TRIPLET"
 			R_KIND='pr'
-			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/julia-$_spec-$ARCH_OS-$ARCH_FILE.tar.gz"
-			R_LABEL="$_spec"
+			_pr_sha_10_char="$(printf '%.10s' "$_pr_sha")"
+			R_URL="$PR_BASE/bin/$_pr_sha/julia-$_pr_sha_10_char-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_LABEL="pr$_pr_sha_10_char"
 			R_ROLLUP=0 ;;
 		pre)
 			# Greatest version overall, prereleases included: every version matches.
@@ -959,14 +982,15 @@ cmd_install() {
 	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
 	_destname="julia-$R_LABEL"
 	# A stable release is immutable, so once its dir exists the resolved label is that
-	# same build and there is nothing to download. Default to skipping the reinstall:
+	# same build and there is nothing to download; a PR build is likewise pinned (its
+	# label names one commit's build). Default to skipping the reinstall:
 	# no pointless re-download, and no non-atomic refresh of a live version.
 	# We still re-link it (and switch the default),
 	# so the prompt spells that out and points at --reinstall to force a fresh build.
-	# --reinstall, and rolling nightly/pr builds (which refresh to the newest build
+	# --reinstall, and rolling nightly builds (which refresh to the newest build
 	# behind their label - the whole point of re-running them), take the full
 	# download-verify-swap path below.
-	if [ "$_installed" = 1 ] || { [ -d "$INSTALL_DIR/$_destname" ] && [ "$R_KIND" = release ] && [ "$REINSTALL" != 1 ]; }; then
+	if [ "$_installed" = 1 ] || { [ -d "$INSTALL_DIR/$_destname" ] && [ "$R_KIND" != nightly ] && [ "$REINSTALL" != 1 ]; }; then
 		if [ "$_setdefault" = 1 ]; then
 			_prompt="$R_LABEL is already installed; make it the default and refresh its symlinks in $SYMLINK_DIR? (pass --reinstall to re-download and replace the build)"
 		else
@@ -980,7 +1004,7 @@ cmd_install() {
 		[ -n "$R_URL" ] || die "could not resolve a download URL for '$1'"
 		_prompt="Install $R_LABEL into $INSTALL_DIR and link in $SYMLINK_DIR?"
 		if [ -d "$INSTALL_DIR/$_destname" ]; then
-			if [ "$R_KIND" = release ]; then
+			if [ "$R_KIND" != nightly ]; then
 				_prompt="$R_LABEL is already installed; re-download and replace it?"
 			else
 				_prompt="Refresh $R_LABEL to the latest build in $INSTALL_DIR and re-link in $SYMLINK_DIR?"
@@ -1155,8 +1179,9 @@ cmd_remove() {
 	# move aside and delete a tree outside it.
 	is_versionspecchars "$_target" || die "bad version specifier: $_target"
 	# A bare numeric prefix expands to every build under it (releases, prereleases,
-	# the branch nightly, all arches); a non-numeric id (master nightly / pr... /
-	# fully-qualified prerelease or ~arch) matches just itself. See match_installed.
+	# the branch nightly, all arches); a bare `pr` expands to every PR build; any
+	# other id (master nightly / pr<sha> / fully-qualified prerelease or ~arch)
+	# matches just itself. See match_installed.
 	_matches=$(match_installed "$_target") || die "no installed version matching '$_target'"
 	_n=$(printf '%s\n' "$_matches" | grep -c .)
 
@@ -1230,10 +1255,11 @@ Options:
   --reinstall    if a stable version is already installed, re-download and replace it
 
 Versions:
-  1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<num>
+  1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<commit-sha>
   (append ~x86_64, ~x86, or ~aarch64 to override the architecture)
   (switch resolves a numeric prefix to the greatest installed stable
-  patch; prereleases, nightlies, and ~arch builds need their exact id)
+  patch; prereleases, nightlies, PR builds, and ~arch builds need their
+  exact id)
 
 Environment variables:
   INSTALL_JULIA_INSTALL_DIR   where versions are unpacked
@@ -1249,8 +1275,10 @@ Environment variables:
                               (default: autodetect from uname)
   INSTALL_JULIA_STABLE_URL    base for stable/prerelease binaries
                               (default: https://julialang-s3.julialang.org)
-  INSTALL_JULIA_NIGHTLY_URL   base for nightly and PR builds
+  INSTALL_JULIA_NIGHTLY_URL   base for nightly builds
                               (default: https://julialangnightlies-s3.julialang.org)
+  INSTALL_JULIA_PR_URL        base for PR builds
+                              (default: https://julialang-ephemeral-pr.s3.amazonaws.com)
 
 See README.md for full documentation.
 EOF

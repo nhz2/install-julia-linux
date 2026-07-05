@@ -60,7 +60,7 @@ install-julia.sh [options] [command] [version]
 | `install-julia.sh <version>`         | Install `<version>` and make it the default `julia`.                         |
 | `install-julia.sh add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
 | `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
-| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies). A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr1234`) matches just itself. Alias: `rm`. |
+| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies), and a bare `pr` removes every PR build. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr4d42a1b8c1`) matches just itself. Alias: `rm`. |
 | `install-julia.sh list`              | List installed versions. Alias: `ls`.                                        |
 | `install-julia.sh manifest <path>`   | Install the stable Julia version a project's `Manifest.toml` was written with, and make it the default (path is a manifest file or a project dir) |
 
@@ -84,7 +84,7 @@ install-julia.sh [options] [command] [version]
 | `pre`            | Latest release, including release candidates and betas.           |
 | `nightly`        | Latest `master` nightly build.                                    |
 | `1.11-nightly`   | Latest nightly of the `1.11` branch.                              |
-| `pr1234`         | The latest CI build of pull request 1234.                         |
+| `pr<commit sha>` | The CI build of a pull request commit (full 40-char sha).         |
 
 ### Platform override
 
@@ -126,7 +126,8 @@ install-julia.sh 1.10~aarch64    # force ARM64
 | `INSTALL_JULIA_GPGV`         | autodetect `gpgv`/`gpgv2`                     | Force a specific signature-verification command.   |
 | `INSTALL_JULIA_TRIPLET`      | autodetect from `uname`                       | Target triplet, e.g. `x86_64-linux-gnu` or `aarch64-apple-darwin14`. |
 | `INSTALL_JULIA_STABLE_URL`   | `https://julialang-s3.julialang.org`          | Base for stable/prerelease binaries.               |
-| `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly and PR builds.                    |
+| `INSTALL_JULIA_NIGHTLY_URL`  | `https://julialangnightlies-s3.julialang.org` | Base for nightly builds.                           |
+| `INSTALL_JULIA_PR_URL`       | `https://julialang-ephemeral-pr.s3.amazonaws.com` | Base for PR builds.                            |
 
 Stable/prerelease resolution reads `<INSTALL_JULIA_STABLE_URL>/bin/versions.json`
 to discover available versions and to get each build's exact download URL.
@@ -135,8 +136,8 @@ to discover available versions and to get each build's exact download URL.
 
 Versions are unpacked into `INSTALL_JULIA_INSTALL_DIR` (default
 `~/packages/julias`), one directory per version. Stable releases are named by
-their exact version; rolling builds (nightly, PR) are named after their
-label:
+their exact version; nightlies are named after their label, and PR builds
+after the first 10 characters of their commit sha:
 
 ```
 ~/packages/julias/
@@ -159,7 +160,7 @@ julia-nightly    -> .../julia-nightly/bin/julia
 The `julia-1` and `julia-1.12` "rollup" links track the greatest installed
 stable patch/minor on the default architecture.
 Prereleases, nightlies, PR builds, and versions with specified architectures get only their own direct link
-(e.g. `julia-1.13.0-rc1`, `julia-nightly`, `julia-pr1234`, `julia-1.12.6~x86`).
+(e.g. `julia-1.13.0-rc1`, `julia-nightly`, `julia-pr4d42a1b8c1`, `julia-1.12.6~x86`).
 
 ### Reinstalling
 
@@ -167,8 +168,8 @@ Installing a stable or prerelease version that's already present does not
 re-download it. It just refreshes the symlinks (and, for the default-setting form,
 switches the default), after a confirmation prompt that says so. Pass `--reinstall`
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
-Rolling builds (`nightly`, `pr<num>`) always refresh to the newest build behind their
-label.
+Rolling builds (`nightly`, `1.11-nightly`) always refresh to the newest build
+behind their label.
 
 ### Uninstallation
 

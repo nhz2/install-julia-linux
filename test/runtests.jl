@@ -992,7 +992,7 @@ end
     @test !islink(joinpath(symlinkdir, "julia"))       # default did too
     @test islink(joinpath(symlinkdir, "julia-1.10"))   # survivor's link untouched
 
-    # rolling builds carry no numeric prefix: exact name only
+    # a pr id carries no numeric prefix: exact name only
     r = run_script_y("remove", "pr123")
     @test r.code == 0
     @test sort(readdir(installdir)) == ["julia-1.10.0"]
@@ -1024,6 +1024,27 @@ end
     @test r.code == 0
     @test occursin("4 installed versions match '1.3.0'", r.err)
     @test readdir(installdir) == ["julia-1.3.1"]
+
+    # a pr<sha> id is matched by exact name only: its ~arch copy and other
+    # PR builds survive, and a sha prefix is not expanded
+    cleanup()
+    for v in ("1.0.0", "pr4d42a1b8c1", "pr4d42a1b8c1~x86", "prffffffffff")
+        mkpath(joinpath(installdir, "julia-$v/bin"))
+    end
+    r = run_script_y("remove", "pr4d42a1b8c1")
+    @test r.code == 0
+    @test sort(readdir(installdir)) ==
+        ["julia-1.0.0", "julia-pr4d42a1b8c1~x86", "julia-prffffffffff"]
+    r = run_script_y("remove", "pr4d42")
+    @test r.code == 1
+    @test occursin("no installed version matching 'pr4d42'", r.err)
+
+    # bare `pr` sweeps every PR build, ~arch copies included; stable
+    # releases are untouched
+    r = run_script_y("remove", "pr")
+    @test r.code == 0
+    @test occursin("2 installed versions match 'pr'", r.err)
+    @test readdir(installdir) == ["julia-1.0.0"]
 end
 @testset "version comparison" begin
     # The SemVer comparator that replaced sort -V is exercised through real
@@ -1298,15 +1319,14 @@ if Sys.islinux()
     end
 end  # if Sys.islinux() - interrupted download
 @testset "nightly and pr" begin
-    # A NIGHTLY_BASE-shaped fake mirror: a master nightly, a 1.11 branch
-    # nightly, and a pr123 build (nightlies use the filename arch as the
-    # bucket dir, with no x64 alias and no minor dir for master).
+    # A NIGHTLY_BASE-shaped fake mirror: a master nightly and a 1.11 branch
+    # nightly (nightlies use the filename arch as the bucket dir, with no x64
+    # alias and no minor dir for master).
     cleanup()
     nmr = joinpath(mktempdir(), "mirror")
     for (name, ver) in (
         ("bin/linux/x86_64/julia-latest-linux-x86_64.tar.gz", "1.99.0-DEV"),
         ("bin/linux/x86_64/1.11/julia-latest-linux-x86_64.tar.gz", "1.11.8-DEV"),
-        ("bin/linux/x86_64/julia-pr123-linux-x86_64.tar.gz", "1.98.0-DEV"),
     )
         mkpath(dirname(joinpath(nmr, name)))
         write(joinpath(nmr, name), fake_tarball(ver))
@@ -1338,23 +1358,60 @@ end  # if Sys.islinux() - interrupted download
     @test r.code == 1
     @test r.err == "error: unrecognized version specifier: x-nightly\n"
 
+    # A PR_BASE-shaped fake mirror: PR builds are keyed by the head commit
+    # (full sha as the dir, first 10 chars in the filename).
+    prsha = "4d42a1b8c138fd80ce23624c43185bcf7051c6f2"
+    prshort = prsha[1:10]
+    prmr = joinpath(mktempdir(), "prmirror")
+    prname = "bin/$prsha/julia-$prshort-linux-x86_64.tar.gz"
+    mkpath(dirname(joinpath(prmr, prname)))
+    write(joinpath(prmr, prname), fake_tarball("1.98.0-DEV"))
+    prenv = ("INSTALL_JULIA_PR_URL" => "file://$prmr",)
+
     # pr builds are unsigned by design: install skips verification with a
-    # warning even when verification is otherwise on
-    r = run_script_y("add", "pr123"; env=("INSTALL_JULIA_NIGHTLY_URL" => "file://$nmr",))
+    # warning even when verification is otherwise on. The label is the first
+    # 10 chars of the sha, and it never rolls up.
+    r = run_script_y("add", "pr$prsha"; env=prenv)
     @test r.code == 0
+    @test occursin("Resolved 'pr$prsha' -> pr$prshort (pr)", r.err)
     @test occursin("PR builds are not signed; skipping signature verification", r.err)
-    @test read(`$(joinpath(symlinkdir, "julia-pr123"))`, String) == "fake julia 1.98.0-DEV\n"
+    @test read(`$(joinpath(symlinkdir, "julia-pr$prshort"))`, String) == "fake julia 1.98.0-DEV\n"
     @test !ispath(joinpath(symlinkdir, "julia-1"))
 
-    # a pr with no published build dies on the HEAD probe, before installing anything
-    r = run_script_y("add", "pr999999999"; env)
+    # a sha pins exactly one build: re-adding it refreshes the symlinks
+    # without re-downloading, like a stable release (-y skips the
+    # "already installed" prompt, so assert on the absence of a download)
+    r = run_script_y("add", "pr$prsha"; env=prenv)
+    @test r.code == 0
+    @test !occursin("Downloading", r.err)
+    @test !occursin("Installed", r.err)
+    @test read(`$(joinpath(symlinkdir, "julia-pr$prshort"))`, String) == "fake julia 1.98.0-DEV\n"
+
+    # uppercase hex is normalized to the bucket's lowercase key, resolving
+    # to the same installed build (no download)
+    r = run_script_y("add", "pr$(uppercase(prsha))"; env=prenv)
+    @test r.code == 0
+    @test occursin("Resolved 'pr$(uppercase(prsha))' -> pr$prshort (pr)", r.err)
+    @test !occursin("Downloading", r.err)
+
+    # Just pr is not a valid spec
+    r = run_script_y("add", "pr"; env=prenv)
+    @test r.code == 1
+    @test r.err == "error: unrecognized version specifier: pr\n"
+
+    # malformed shas: too short, too long, non-hex, empty
+    for bad in ("pr123", "pr12ab", "pr" * "a"^39, "pr" * "a"^41, "pr123" * "g"^37)
+        r = run_script_y("add", bad; env=prenv)
+        @test r.code == 1
+        @test r.err == "error: bad pr spec: $bad (expected pr<full 40-char commit sha>)\n"
+    end
+
+    # a sha with no published build dies at download, before installing anything
+    othersha = "ffffffffffffffffffffffffffffffffffffffff"
+    r = run_script_y("add", "pr$othersha"; env=prenv)
     @test r.code == 1
     @test occursin("download failed", r.err)
-    @test !isdir(joinpath(installdir, "julia-pr999999999"))
-
-    r = run_script_y("add", "pr12ab"; env)
-    @test r.code == 1
-    @test r.err == "error: bad pr spec: pr12ab (expected pr<number>)\n"
+    @test !isdir(joinpath(installdir, "julia-prffffffffff"))
 end
 @testset "rollup raising" begin
     # raise_rollup only ever raises: installing an OLDER patch must not lower
@@ -1528,7 +1585,10 @@ end
 
     # nightly/PR download coordinates are derived FROM the triplet: the os segment of
     # the url tracks the platform (linux | macos | freebsd) and the bucket/filename
-    # arch is the triplet's cputype.
+    # arch is the triplet's cputype (PR builds are keyed by head commit sha, with the
+    # os/arch only in the filename).
+    prsha = "4d42a1b8c138fd80ce23624c43185bcf7051c6f2"
+    prshort = prsha[1:10]
     for (trip, os, filearch) in (
             ("x86_64-apple-darwin14",      "macos",   "x86_64"),
             ("aarch64-apple-darwin14",     "macos",   "aarch64"),
@@ -1537,12 +1597,16 @@ end
         nmr = joinpath(mktempdir(), "mirror")
         for (name, ver) in (
             ("bin/$os/$filearch/julia-latest-$os-$filearch.tar.gz", "1.99.0-DEV"),
-            ("bin/$os/$filearch/1.11/julia-latest-$os-$filearch.tar.gz", "1.11.8-DEV"),
-            ("bin/$os/$filearch/julia-pr123-$os-$filearch.tar.gz", "1.98.0-DEV"))
+            ("bin/$os/$filearch/1.11/julia-latest-$os-$filearch.tar.gz", "1.11.8-DEV"))
             mkpath(dirname(joinpath(nmr, name)))
             write(joinpath(nmr, name), fake_tarball(ver))
         end
+        prmr = joinpath(mktempdir(), "prmirror")
+        prname = "bin/$prsha/julia-$prshort-$os-$filearch.tar.gz"
+        mkpath(dirname(joinpath(prmr, prname)))
+        write(joinpath(prmr, prname), fake_tarball("1.98.0-DEV"))
         env = ("INSTALL_JULIA_NIGHTLY_URL" => "file://$nmr",
+               "INSTALL_JULIA_PR_URL" => "file://$prmr",
                "INSTALL_JULIA_TRIPLET" => trip,
                "INSTALL_JULIA_NO_VERIFY" => "1")
         r = run_script_y("nightly"; env)
@@ -1551,9 +1615,9 @@ end
         r = run_script_y("add", "1.11-nightly"; env)
         @test r.code == 0
         @test read(`$(joinpath(symlinkdir, "julia-1.11-nightly"))`, String) == "fake julia 1.11.8-DEV\n"
-        r = run_script_y("add", "pr123"; env)
+        r = run_script_y("add", "pr$prsha"; env)
         @test r.code == 0
-        @test read(`$(joinpath(symlinkdir, "julia-pr123"))`, String) == "fake julia 1.98.0-DEV\n"
+        @test read(`$(joinpath(symlinkdir, "julia-pr$prshort"))`, String) == "fake julia 1.98.0-DEV\n"
     end
 
     # a ~arch override swaps the cputype and rebuilds the triplet from the configured
@@ -1598,7 +1662,7 @@ end
         "INSTALL_JULIA_NO_VERIFY" => "1"))
     @test r.code == 0
     @test isfile(joinpath(installdir, "julia-1.0.0/bin/julia"))
-    for (spec, what) in (("nightly", "nightly"), ("1.11-nightly", "nightly"), ("pr123", "PR"))
+    for (spec, what) in (("nightly", "nightly"), ("1.11-nightly", "nightly"), ("pr$prsha", "PR"))
         r = run_script_y("add", spec; env=(
             "INSTALL_JULIA_TRIPLET" => "x86_64-w64-fakeos",
             "INSTALL_JULIA_NO_VERIFY" => "1"))
