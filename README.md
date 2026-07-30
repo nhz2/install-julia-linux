@@ -72,6 +72,8 @@ install-julia.sh [options] [command] [version]
 | `-v`, `--version`               | Show the script's own version.           |
 | `-y`, `--yes`                   | Don't prompt for confirmation.           |
 | `--reinstall`                   | If a stable version is already installed, re-download and replace it. |
+| `--no-reinstall`                | if the requested version is already installed, print a message and
+                                    exit without prompting or relinking |
 
 ## Version specifiers
 
@@ -169,7 +171,8 @@ re-download it. It just refreshes the symlinks (and, for the default-setting for
 switches the default), after a confirmation prompt that says so. Pass `--reinstall`
 to force a fresh download and replace the build (e.g. to repair a corrupt tree).
 Rolling builds (`nightly`, `1.11-nightly`) always refresh to the newest build
-behind their label.
+behind their label. Alternatively, pass `--no-reinstall` to exit without prompting
+for confirmation if the requested version is already installed.
 
 ### Uninstallation
 

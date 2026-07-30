@@ -129,6 +129,7 @@ EOF
 
 NO_CONFIRM=0
 REINSTALL=0
+NO_REINSTALL=0
 
 # Resolver output:
 R_KIND=""      # release | nightly | pr
@@ -981,6 +982,13 @@ cmd_install() {
 
 	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
 	_destname="julia-$R_LABEL"
+
+        # Honor --no-reinstall: if already installed, print and exit quietly.
+        if [ "$NO_REINSTALL" = 1 ] && [ -d "$INSTALL_DIR/$_destname" ]; then
+            info "$R_LABEL is already installed; exiting due to --no-reinstall"
+            exit 0
+        fi
+
 	# A stable release is immutable, so once its dir exists the resolved label is that
 	# same build and there is nothing to download; a PR build is likewise pinned (its
 	# label names one commit's build). Default to skipping the reinstall:
@@ -1253,6 +1261,8 @@ Options:
   -v, --version  show version and exit
   -y, --yes      do not prompt for confirmation
   --reinstall    if a stable version is already installed, re-download and replace it
+  --no-reinstall if the requested version is already installed, print a message and
+                 exit without prompting or relinking
 
 Versions:
   1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<commit-sha>
@@ -1295,6 +1305,7 @@ main() {
 			-v | --version) printf 'install-julia.sh %s\n' "$SELF_VERSION"; exit 0 ;;
 			-y | --yes)     NO_CONFIRM=1 ;;
 			--reinstall)    REINSTALL=1 ;;
+                        --no-reinstall) NO_REINSTALL=1 ;;
 			-*)             die "unknown option: $1 (try --help)" ;;
 			*)
 				if   [ -z "$_cmd" ]; then _cmd=$1
