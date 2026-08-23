@@ -983,11 +983,11 @@ cmd_install() {
 	info "Resolved '$1' -> $R_LABEL ($R_KIND)"
 	_destname="julia-$R_LABEL"
 
-        # Honor --no-reinstall: if already installed, print and exit quietly.
-        if [ "$NO_REINSTALL" = 1 ] && [ -d "$INSTALL_DIR/$_destname" ]; then
-            info "$R_LABEL is already installed; exiting due to --no-reinstall"
-            exit 0
-        fi
+	# Honor --no-reinstall: if already installed, print and exit quietly.
+	if [ "$NO_REINSTALL" = 1 ] && [ -d "$INSTALL_DIR/$_destname" ]; then
+		info "$R_LABEL is already installed; exiting due to --no-reinstall"
+		exit 0
+	fi
 
 	# A stable release is immutable, so once its dir exists the resolved label is that
 	# same build and there is nothing to download; a PR build is likewise pinned (its
