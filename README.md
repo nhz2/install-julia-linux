@@ -9,18 +9,12 @@ symlinks on your `PATH`.
 
 Runtime dependencies: `curl`, `gpgv` (or `gpgv2`/`sqv`), `tar`, `mktemp`, and `base64`
 
-## One line install of the latest version of Julia
-
-```sh
-curl -fsSL https://github.com/nhz2/install-julia-linux/releases/download/v0.4.0/install-julia.sh | sh
-```
-
 ## Install the script for ongoing version management
 
 ```sh
 curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.4.0/install-julia.sh
 chmod +x install-julia.sh
-mv install-julia.sh ~/.local/bin/
+mv install-julia.sh ~/.local/bin/jinstall
 ```
 
 This downloads the script (you can also just copy the file), makes it executable, and moves it to `~/.local/bin`. Make sure that directory is on your `PATH`.
@@ -28,7 +22,7 @@ This downloads the script (you can also just copy the file), makes it executable
 ## Quick start
 
 ```sh
-install-julia.sh
+jinstall
 julia
 ```
 
@@ -38,31 +32,31 @@ The first command installs the latest stable Julia and makes it the default;
 ## Other examples
 
 ```sh
-install-julia.sh 1.12                  # latest 1.12.x, set as default
-install-julia.sh manifest .            # install the stable version the Manifest.toml was written with, set as default
-install-julia.sh add 1.10              # install 1.10.x without changing the default
-install-julia.sh add nightly           # add the master nightly
-install-julia.sh add pre               # add the latest prerelease or stable
-install-julia.sh switch 1.10           # make 1.10.x the default julia
-install-julia.sh remove 1.10           # delete all 1.10.*
-install-julia.sh list                  # show what's installed
+jinstall 1.12                  # latest 1.12.x, set as default
+jinstall manifest .            # install the stable version the Manifest.toml was written with, set as default
+jinstall add 1.10              # install 1.10.x without changing the default
+jinstall add nightly           # add the master nightly
+jinstall add pre               # add the latest prerelease or stable
+jinstall switch 1.10           # make 1.10.x the default julia
+jinstall remove 1.10           # delete all 1.10.*
+jinstall list                  # show what's installed
 ```
 
 ## Usage
 
 ```
-install-julia.sh [options] [command] [version]
+jinstall [options] [command] [version]
 ```
 
 | Command                              | What it does                                                                 |
 | ------------------------------------ | ---------------------------------------------------------------------------- |
-| `install-julia.sh`                   | Install the latest stable release and point the default `julia` at it.       |
-| `install-julia.sh <version>`         | Install `<version>` and make it the default `julia`.                         |
-| `install-julia.sh add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
-| `install-julia.sh switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
-| `install-julia.sh remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies), and a bare `pr` removes every PR build. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr4d42a1b8c1`) matches just itself. Alias: `rm`. |
-| `install-julia.sh list`              | List installed versions. Alias: `ls`.                                        |
-| `install-julia.sh manifest <path>`   | Install the stable Julia version a project's `Manifest.toml` was written with, and make it the default (path is a manifest file or a project dir) |
+| `jinstall`                   | Install the latest stable release and point the default `julia` at it.       |
+| `jinstall <version>`         | Install `<version>` and make it the default `julia`.                         |
+| `jinstall add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
+| `jinstall switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
+| `jinstall remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies), and a bare `pr` removes every PR build. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr4d42a1b8c1`) matches just itself. Alias: `rm`. |
+| `jinstall list`              | List installed versions. Alias: `ls`.                                        |
+| `jinstall manifest <path>`   | Install the stable Julia version a project's `Manifest.toml` was written with, and make it the default (path is a manifest file or a project dir) |
 
 ### Options
 
@@ -93,7 +87,7 @@ The target triplet is autodetected on Linux, macOS, and FreeBSD.
 Set `INSTALL_JULIA_TRIPLET` to install for a specific platform:
 
 ```sh
-INSTALL_JULIA_TRIPLET=aarch64-apple-darwin14 install-julia.sh add 1.10
+INSTALL_JULIA_TRIPLET=aarch64-apple-darwin14 jinstall add 1.10
 ```
 
 Available triplets:
@@ -111,9 +105,9 @@ Any specifier may also carry a `~arch` suffix to override just the CPU, keeping
 the autodetected (or configured) platform:
 
 ```sh
-install-julia.sh 1.10~x86_64     # force 64-bit x86
-install-julia.sh 1.10~x86        # force 32-bit (i686)
-install-julia.sh 1.10~aarch64    # force ARM64
+jinstall 1.10~x86_64     # force 64-bit x86
+jinstall 1.10~x86        # force 32-bit (i686)
+jinstall 1.10~aarch64    # force ARM64
 ```
 
 ## Environment variables
@@ -166,19 +160,21 @@ Prereleases, nightlies, PR builds, and versions with specified architectures get
 
 Installing a stable or prerelease version that's already present does not
 re-download it. It just refreshes the symlinks (and, for the default-setting form,
-switches the default), after a confirmation prompt that says so. Pass `--reinstall`
-to force a fresh download and replace the build (e.g. to repair a corrupt tree).
-Rolling builds (`nightly`, `1.11-nightly`) always refresh to the newest build
+switches the default), after a confirmation prompt that says so. Rolling builds
+(`nightly`, `1.11-nightly`) always re-download and refresh to the newest build
 behind their label.
+
+Pass `--reinstall` to force a fresh download that replaces the build, even for a
+stable version (e.g. to repair a corrupt tree).
 
 ### Uninstallation
 
-Use `install-julia.sh remove <version>` to delete a single version along with
+Use `jinstall remove <version>` to delete a single version along with
 its symlinks. To uninstall
 everything, delete the install directory (`INSTALL_JULIA_INSTALL_DIR`, default
 `~/packages/julias`) and remove the `julia*` symlinks from the symlink
 directory (`INSTALL_JULIA_SYMLINK_DIR`, default `~/.local/bin`). Also delete the
-`install-julia.sh` script itself if you installed it (e.g. `~/.local/bin/install-julia.sh`).
+script itself if you installed it (e.g. `~/.local/bin/jinstall`).
 If you would also like to remove your packages and other configuration, remove `~/.julia`.
 
 ## Verification
