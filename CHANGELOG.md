@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+### Added
+
+- Build variants can be installed with a `+variant` suffix, e.g. `jinstall add 1.14.0-alpha2+opt`.
+
 ## [v0.4.0](https://github.com/nhz2/install-julia-linux/tree/v0.4.0) - 2026-07-04
 
 ### Added

@@ -54,7 +54,7 @@ jinstall [options] [command] [version]
 | `jinstall <version>`         | Install `<version>` and make it the default `julia`.                         |
 | `jinstall add <version>`     | Install `<version>` but leave the default `julia` untouched.                 |
 | `jinstall switch <ver\|path>` | Repoint the default `julia` at an already-installed version, or at a path to a `julia` binary. A numeric prefix (`1`, `1.12`) picks the greatest installed stable patch under it. Installs nothing. |
-| `jinstall remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, and per-arch copies), and a bare `pr` removes every PR build. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr4d42a1b8c1`) matches just itself. Alias: `rm`. |
+| `jinstall remove <version>`  | Delete a version and its symlinks. A bare numeric prefix removes every matching build (releases, prereleases, the branch nightly, build variants, and per-arch copies), and a bare `pr` removes every PR build. A fully-qualified id (`1.12.6~aarch64`, `nightly`, `pr4d42a1b8c1`) matches just itself. Alias: `rm`. |
 | `jinstall list`              | List installed versions. Alias: `ls`.                                        |
 | `jinstall manifest <path>`   | Install the stable Julia version a project's `Manifest.toml` was written with, and make it the default (path is a manifest file or a project dir) |
 
@@ -80,6 +80,21 @@ jinstall [options] [command] [version]
 | `1.11-nightly`   | Latest nightly of the `1.11` branch.                              |
 | `pr<commit sha>` | The CI build of a pull request commit (full 40-char sha).         |
 
+### Version suffixes
+
+A specifier may end with a `+variant` and/or a `~arch` suffix, in that order
+(e.g. `1.14.0-alpha2+opt~aarch64`):
+
+| Suffix     | Meaning                                                           |
+| ---------- | ----------------------------------------------------------------- |
+| `+opt`     | The optimized (PGO+LTO+BOLT) build, where one is published.       |
+| `+assert`  | The build with assertions enabled, where one is published.        |
+| `~x86_64`  | Force 64-bit x86.                                                 |
+| `~x86`     | Force 32-bit x86 (i686).                                          |
+| `~aarch64` | Force ARM64.                                                      |
+
+`~arch` overrides just the CPU, keeping the autodetected (or configured) platform.
+
 ### Platform override
 
 The target triplet is autodetected on Linux, macOS, and FreeBSD.
@@ -100,15 +115,6 @@ Available triplets:
 - `x86_64-apple-darwin14`
 - `aarch64-apple-darwin14`
 - `x86_64-unknown-freebsd11.1`
-
-Any specifier may also carry a `~arch` suffix to override just the CPU, keeping
-the autodetected (or configured) platform:
-
-```sh
-jinstall 1.10~x86_64     # force 64-bit x86
-jinstall 1.10~x86        # force 32-bit (i686)
-jinstall 1.10~aarch64    # force ARM64
-```
 
 ## Environment variables
 
@@ -153,8 +159,8 @@ julia-nightly    -> .../julia-nightly/bin/julia
 
 The `julia-1` and `julia-1.12` "rollup" links track the greatest installed
 stable patch/minor on the default architecture.
-Prereleases, nightlies, PR builds, and versions with specified architectures get only their own direct link
-(e.g. `julia-1.13.0-rc1`, `julia-nightly`, `julia-pr4d42a1b8c1`, `julia-1.12.6~x86`).
+Prereleases, nightlies, PR builds, build variants, and versions with specified architectures get only their own direct link
+(e.g. `julia-1.13.0-rc1`, `julia-nightly`, `julia-pr4d42a1b8c1`, `julia-1.14.0-alpha2+opt`, `julia-1.12.6~x86`).
 
 ### Reinstalling
 

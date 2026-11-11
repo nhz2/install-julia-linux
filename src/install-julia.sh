@@ -15,7 +15,7 @@ set -eu
 
 export LC_ALL=C
 
-SELF_VERSION="0.4.0"
+SELF_VERSION="0.5.0-dev"
 
 # --------------------------------------------------------------------------- #
 # Configuration                                                               #
@@ -142,6 +142,10 @@ ARCH_FILE=""     # nightly-bucket dir / filename arch: x86_64 | i686 | aarch64 (
 ARCH_OS=""       # nightly-url os segment derived from the triplet: linux | macos | freebsd ("" if unknown)
 ARCH_SUFFIX=""   # "~<arch>" tag appended to the label when ~arch was given ("" if autodetected)
 
+# Build variant, split off a spec's +variant in cmd_install:
+VARIANT=""         # variant name load_table selects, e.g. opt | assert ("" for the standard build)
+VARIANT_SUFFIX=""  # "+<variant>" tag appended to the label ("" for the standard build)
+
 # Cached "<version> <url-suffix>" table for ARCH_TRIPLET, extracted by load_table. The
 # suffix is the release feed url with its (trusted) base stripped, ready to be re-rooted
 # onto STABLE_BASE. The cached table is reused without re-fetching: a prefix spec reads
@@ -225,12 +229,14 @@ is_alphanumdashdot() {
 
 # allowed characters for script version spec
 # MUST NOT include path separators.
-# '+' is excluded on purpose: build metadata is unsupported (is_version rejects it) so
-# a '+' is never legitimate in a spec, and reesc only escapes '.', so leaving '+' in
-# would let it through unescaped into the search filter as an ERE quantifier.
+# '+' only ever introduces a build variant (1.14.0-alpha2+opt), never build metadata
+# (is_version rejects that). reesc only escapes '.', so a '+' must never reach a regex,
+# where it would be an ERE quantifier: cmd_install splits the variant off before the
+# version is parsed or put in the search filter, and cmd_switch keeps a '+' out of its
+# `grep -E` prefix match.
 is_versionspecchars() {
 	case "$1" in
-		*[!0-9A-Za-z.~_-]*) return 1 ;;     # any char outside the set
+		*[!0-9A-Za-z.~_+-]*) return 1 ;;     # any char outside the set
 		*) return 0 ;;
 	esac
 }
@@ -473,8 +479,8 @@ arch_setup() {
 reesc() { printf '%s' "$1" | sed 's/\./\\./g'; }
 
 # load_table: fetch versions.json and extract the "<version> <url-suffix>" rows whose
-# `triplet` is ARCH_TRIPLET and whose version matches VERSION_SEARCH_FILTER into
-# VERSION_URL_TABLE.
+# `triplet` is ARCH_TRIPLET, whose version matches VERSION_SEARCH_FILTER, and whose
+# build variant is VARIANT ("" for the standard builds) into VERSION_URL_TABLE.
 #
 # This is the trust boundary for download urls: get_url strips a KNOWN base (the
 # user-configured STABLE_BASE, or the canonical STABLE_OFFICIAL bucket) off each url
@@ -492,6 +498,10 @@ reesc() { printf '%s' "$1" | sed 's/\./\\./g'; }
 load_table() {
 	# Require input variables to be defined
 	[ -z "$VERSION_SEARCH_FILTER" ] && die "assertion failed, VERSION_SEARCH_FILTER not defined"
+	# VARIANT is interpolated into an awk regex; cmd_install already held it to a-z0-9.
+	case "$VARIANT" in *[!a-z0-9]*)
+		die "assertion failed, VARIANT '$VARIANT' must be zero or more of a-z0-9" ;;
+	esac
 	case "$ARCH_TRIPLET" in "" | *[!A-Za-z0-9_.-]*)
 		die "bad triplet '$ARCH_TRIPLET' (triplet must be one or more of A-Za-z0-9_.-)" ;;
 	esac
@@ -512,13 +522,19 @@ load_table() {
 	VERSION_URL_TABLE=$(
 		printf '%s' "$_TABLE_JSON_FEED" |
 		tr -d '\n\r' |
-		STABLE_OFFICIAL="$STABLE_OFFICIAL" STABLE_BASE="$STABLE_BASE" VERSION_SEARCH_FILTER="$VERSION_SEARCH_FILTER" awk -v triplet="$ARCH_TRIPLET" -v RS="}" '
+		STABLE_OFFICIAL="$STABLE_OFFICIAL" STABLE_BASE="$STABLE_BASE" VERSION_SEARCH_FILTER="$VERSION_SEARCH_FILTER" VARIANT="$VARIANT" awk -v triplet="$ARCH_TRIPLET" -v RS="}" '
 	BEGIN {
 		stable_official = ENVIRON["STABLE_OFFICIAL"]
 		stable_base = ENVIRON["STABLE_BASE"]
 		v_filter = ENVIRON["VERSION_SEARCH_FILTER"]
+		variant = ENVIRON["VARIANT"]
 	}
 	function esc(s){ gsub(/\./, "\\.", s); return s }
+	# Standard build: no list of variant names. Variant: exactly ["<variant>"].
+	function variant_ok(o) {
+		if (variant == "") return o !~ /"variants"[ \t]*:[ \t]*\[[ \t]*"/
+		return o ~ ("\"variants\"[ \t]*:[ \t]*\\[[ \t]*\"" variant "\"[ \t]*\\]")
+	}
 	function get_version(o,  matched) {
 		if (match(o, /"version"[ \t]*:[ \t]*"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?"/)) {
 			# extract the k : v
@@ -562,6 +578,7 @@ load_table() {
 	}
 	/"extension"[ \t]*:[ \t]*"tar\.gz"/ &&
 	/"kind"[ \t]*:[ \t]*"archive"/ &&
+	variant_ok($0) &&
 	$0 ~ ("\"triplet\"[ \t]*:[ \t]*\"" esc(triplet) "\"") &&
 	get_version($0) && get_url($0) {
 		print got_version " " got_url # globals set in get_version and get_url
@@ -570,7 +587,7 @@ load_table() {
 }
 
 # feed_select -> the cached "<version> <url-suffix>" table, one row per installable
-# build for ARCH_TRIPLET matching VERSION_SEARCH_FILTER. Callers MUST run load_table
+# build for ARCH_TRIPLET and VARIANT matching VERSION_SEARCH_FILTER. Callers MUST run load_table
 # first (on its own line, so a fetch error is not swallowed inside their pipeline).
 # Empty table prints nothing.
 feed_select() {
@@ -600,14 +617,14 @@ pick_latest() {
 # /bin/ needs no script edit.
 resolve_stable_full() {
 	_full=$1
-	[ -n "$_full" ] || die "no stable release matching '$_spec' for $ARCH_TRIPLET"
+	[ -n "$_full" ] || die "no stable release matching '$_spec$VARIANT_SUFFIX' for $ARCH_TRIPLET"
 	is_version "$_full" || die "$_full is not a valid version"
 	# Take the url-suffix of the row whose version equals _full exactly. The suffix
 	# already passed load_table's trust gate (known base stripped, narrow /bin/... shape),
 	# so just re-root it onto STABLE_BASE to honor a mirror without trusting the release
 	# feed host. get_url guarantees a non-empty suffix, so empty means no matching row.
 	_resolve_stable_full_suffix=$(feed_select | awk -v v="$_full" '$1 == v { print $2; exit }')
-	[ -n "$_resolve_stable_full_suffix" ] || die "no $ARCH_TRIPLET archive for $_full in versions.json"
+	[ -n "$_resolve_stable_full_suffix" ] || die "no $ARCH_TRIPLET archive for $_full$VARIANT_SUFFIX in versions.json"
 	R_URL="$STABLE_BASE$_resolve_stable_full_suffix"
 	R_KIND=release
 	# Plain X.Y.Z (no prerelease tag) participates in rollup symlinks.
@@ -710,12 +727,13 @@ install_resolved() {
 
 	# Version-binding: GPG proves the tarball is a genuine Julia build but not *which*
 	# one, so a hostile endpoint could serve a different (older, still-signed) release
-	# than requested. For stable/prerelease builds the tarball dir IS the version, so
-	# require it to equal the resolved label (sans any ~arch tag); fail closed on a
-	# mismatch or a missing version. Nightly and PR builds carry a fluid
-	# dev version with no such invariant, so the binding doesn't apply to them.
+	# than requested. For stable/prerelease builds the tarball dir IS the version (a
+	# variant's too), so require it to equal the resolved label sans any +variant and
+	# ~arch tags; fail closed on a mismatch or a missing version. Nightly and PR builds
+	# carry a fluid dev version with no such invariant, so the binding doesn't apply to them.
 	if [ "$R_KIND" = release ]; then
 		_want=${R_LABEL%"$ARCH_SUFFIX"}
+		_want=${_want%"$VARIANT_SUFFIX"}
 		[ "$_realver" = "$_want" ] ||
 			die "version mismatch: requested $_want but tarball reports '${_realver:-unknown}' - refusing to install"
 	fi
@@ -815,8 +833,9 @@ set_default() { linked_to "julia" "$1" || link "julia" "$1" || linked_to "julia"
 
 # List *every* installed build matching a removal query, one "julia-<id>" per line.
 # A pure-numeric prefix (1, 1.12, 1.12.6) sweeps every build under it --
-# releases, prereleases, the branch nightly, and ALL arches - so `remove 1.12`
-# clears the whole 1.12 line (1.12.x, 1.12.x-rcN, 1.12-nightly, and any ~arch copy).
+# releases, prereleases, the branch nightly, build variants, and ALL arches - so
+# `remove 1.12` clears the whole 1.12 line (1.12.x, 1.12.x-rcN, 1.12-nightly, and any
+# +variant or ~arch copy).
 # Matching is on component boundaries, so `1.1` never catches `1.10.0`. A bare `pr`
 # sweeps every PR build. Any other fully-qualified id is matched only by exact
 # name. Nonzero if nothing matches.
@@ -838,18 +857,18 @@ match_installed() {
 		*[!0-9.]*) ;;   # not pure-numeric -> exact match only (handled below)
 		*)
 			# Pure-numeric prefix: sweep every build whose version starts with it
-			# at a component boundary ('.', '~', or '-').
+			# at a component boundary ('.', '~', '+', or '-').
 			_hits=$(ls "$INSTALL_DIR" 2>/dev/null |
 				while IFS= read -r _id; do
 					case "${_id}" in
 						# some problematic characters are filtered
 						(*[!0-9A-Za-z.~_+-]*) : ;;
-						("julia-${1}" | "julia-${1}"[.~-]*) printf '%s\n' "$_id" ;;
+						("julia-${1}" | "julia-${1}"[.~+-]*) printf '%s\n' "$_id" ;;
 					esac
 				done)
 			[ -n "$_hits" ] && { printf '%s\n' "$_hits"; return 0; } ;;
 	esac
-	# Exact id: a fully-qualified prerelease/~arch name, a rolling build, or a
+	# Exact id: a fully-qualified prerelease/+variant/~arch name, a rolling build, or a
 	# numeric token with no swept match above.
 	[ -d "$INSTALL_DIR/julia-$1" ] && { printf 'julia-%s\n' "$1"; return 0; }
 	return 1
@@ -875,6 +894,9 @@ cmd_install() {
 		*"~"*)
 			# Everything after the LEFTMOST ~ is the arch token
 			_arch=${_spec#*~}
+			case "$_arch" in *+*)
+				die "bad arch override in '$_spec' (a +variant goes before the ~arch, e.g. 1.14+opt~aarch64)" ;;
+			esac
 			# Require a non-empty bare token: it's interpolated into the sed
 			# expressions and download URL (a metacharacter could break out of
 			# them) and becomes part of the install-dir name. Unknown-but-well-
@@ -886,6 +908,21 @@ cmd_install() {
 		*)     ARCH_SUFFIX=""; arch_setup "";;
 	esac
 
+	# Split off a build variant: "1.14.0-alpha2+opt" (see load_table). Everything after
+	# the LEFTMOST + is the variant name, held to the a-z0-9 of the release feed schema,
+	# so what is left of the spec never carries a '+' into is_version or the search
+	# filter. Like ~arch it tags the label and opts the build out of the rollups (below);
+	# it selects among the builds of whatever release the rest of the spec resolves to.
+	case "$_spec" in
+		*+*)
+			VARIANT=${_spec#*+}
+			case "$VARIANT" in "" | *[!a-z0-9]*)
+				die "bad variant in '$1' (variant must be one or more of a-z0-9)" ;;
+			esac
+			VARIANT_SUFFIX="+$VARIANT"; _spec=${_spec%%+*} ;;
+		*)  VARIANT=""; VARIANT_SUFFIX="" ;;
+	esac
+
 	# Fast path: a stable build is immutable, so if this exact version is already
 	# installed (and we are not reinstalling) the resolved label is that same build -
 	# set R_* directly and skip the case's versions.json fetch. Only a valid full
@@ -894,7 +931,7 @@ cmd_install() {
 	# removed from under us we re-link (or no-op) rather than dying on the empty
 	# R_URL we never resolved (we are not reinstalling, so there is nothing to fetch).
 	_installed=0
-	if is_version "$_spec" && [ -d "$INSTALL_DIR/julia-$_spec$ARCH_SUFFIX" ] && [ "$REINSTALL" != 1 ]; then
+	if is_version "$_spec" && [ -d "$INSTALL_DIR/julia-$_spec$VARIANT_SUFFIX$ARCH_SUFFIX" ] && [ "$REINSTALL" != 1 ]; then
 		R_KIND=release; R_LABEL="$_spec"
 		if has_dash "$_spec"; then R_ROLLUP=0; else R_ROLLUP=1; fi
 		_installed=1
@@ -903,21 +940,23 @@ cmd_install() {
 	# Resolve anything the fast path did not already settle (R_KIND still empty).
 	[ -n "$R_KIND" ] || case "$_spec" in
 		nightly)
+			# Nightly builds: a +variant is appended to the os segment of both the
+			# directory and the filename (bin/linuxopt/x86_64/julia-latest-linuxopt-x86_64.tar.gz).
 			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS$VARIANT/$ARCH_FILE/julia-latest-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		[0-9]*.[0-9]*-nightly)
 			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			_nightly_minor=${_spec%-nightly}
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS$VARIANT/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		pr[0-9A-Fa-f][0-9A-Fa-f]*)
 			# PR builds live in the ephemeral PR bucket, keyed by commit:
-			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os>-<arch>.tar.gz
+			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os><variant>-<arch>.tar.gz
 			# The spec carries the PR build's full 40-char commit sha to avoid
 			# depending on git or the github API. Uppercase hex is accepted and
 			# lowercased to match the bucket key.
@@ -929,7 +968,7 @@ cmd_install() {
 			[ -n "$ARCH_OS" ] || die "no PR builds for $ARCH_TRIPLET"
 			R_KIND='pr'
 			_pr_sha_10_char="$(printf '%.10s' "$_pr_sha")"
-			R_URL="$PR_BASE/bin/$_pr_sha/julia-$_pr_sha_10_char-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$PR_BASE/bin/$_pr_sha/julia-$_pr_sha_10_char-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="pr$_pr_sha_10_char"
 			R_ROLLUP=0 ;;
 		pre)
@@ -971,9 +1010,14 @@ cmd_install() {
 		*)
 			die "unrecognized version specifier: $_spec" ;;
 	esac
-	# Apply the ~arch tag and keep the build out of the X.Y / X rollups: those links
-	# track the builds you install for this machine (no ~arch), so an arch-pinned one
-	# must never hijack them. Its own direct link (julia-<label>~<arch>) is enough.
+	# Apply the +variant and ~arch tags, in that order (julia-1.14.0-alpha2+opt~x86), and
+	# keep the build out of the X.Y / X rollups: those links track the standard builds
+	# you install for this machine, so a variant or arch-pinned one must never hijack
+	# them. Its own direct link is enough.
+	if [ -n "$VARIANT_SUFFIX" ]; then
+		R_LABEL="$R_LABEL$VARIANT_SUFFIX"
+		R_ROLLUP=0
+	fi
 	if [ -n "$ARCH_SUFFIX" ]; then
 		R_LABEL="$R_LABEL$ARCH_SUFFIX"
 		R_ROLLUP=0
@@ -1054,14 +1098,21 @@ cmd_switch() {
 			return 0 ;;
 	esac
 	# Reject bad characters before the prefix is interpolated into `grep -E` below:
-	# reesc only escapes '.', so an unescaped ERE metacharacter ('+', '*', '[', ...)
-	# would otherwise be interpreted there (e.g. `switch 1+` silently matching 11.0.0).
+	# reesc only escapes '.', so an unescaped ERE metacharacter ('*', '[', ...) would
+	# otherwise be interpreted there. '+' is a legal spec character (it introduces a
+	# build variant), so it passes here and is kept out of the prefix match below
+	# instead (else `switch 1+` would silently match 11.0.0).
 	is_versionspecchars "$_target" || die "bad version specifier: $_target"
 	# Resolve an installed version from a partial id;
 	if [ -d "$INSTALL_DIR/julia-$_target" ]; then
 		# exact match first
 		_destname="julia-$_target"
 	else
+		# A '+' (build variant) would be an ERE quantifier in the prefix match below,
+		# and variants never take part in it anyway: they need their exact id.
+		case "$_target" in *+*)
+			die "no installed version matching '$_target' (build variants need their exact id, e.g. 1.14.0-alpha2+opt)" ;;
+		esac
 		# else greatest installed stable matching the prefix
 		_found_label=$(ls "$INSTALL_DIR" 2>/dev/null |
 			sed -n 's/^julia-\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$/\1/p' |
@@ -1179,8 +1230,9 @@ cmd_remove() {
 	# move aside and delete a tree outside it.
 	is_versionspecchars "$_target" || die "bad version specifier: $_target"
 	# A bare numeric prefix expands to every build under it (releases, prereleases,
-	# the branch nightly, all arches); a bare `pr` expands to every PR build; any
-	# other id (master nightly / pr<sha> / fully-qualified prerelease or ~arch)
+	# the branch nightly, build variants, all arches); a bare `pr` expands to every PR
+	# build; any other id (master nightly / pr<sha> / fully-qualified prerelease,
+	# +variant or ~arch)
 	# matches just itself. See match_installed.
 	_matches=$(match_installed "$_target") || die "no installed version matching '$_target'"
 	_n=$(printf '%s\n' "$_matches" | grep -c .)
@@ -1256,10 +1308,12 @@ Options:
 
 Versions:
   1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<commit-sha>
-  (append ~x86_64, ~x86, or ~aarch64 to override the architecture)
+  (append +opt or +assert for a build variant, e.g. 1.14.0-alpha2+opt)
+  (append ~x86_64, ~x86, or ~aarch64 to override the architecture,
+  after any +variant: 1.14.0-alpha2+opt~aarch64)
   (switch resolves a numeric prefix to the greatest installed stable
-  patch; prereleases, nightlies, PR builds, and ~arch builds need their
-  exact id)
+  patch; prereleases, nightlies, PR builds, variants, and ~arch builds
+  need their exact id)
 
 Environment variables:
   INSTALL_JULIA_INSTALL_DIR   where versions are unpacked
