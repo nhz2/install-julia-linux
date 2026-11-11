@@ -940,21 +940,23 @@ cmd_install() {
 	# Resolve anything the fast path did not already settle (R_KIND still empty).
 	[ -n "$R_KIND" ] || case "$_spec" in
 		nightly)
+			# Nightly builds: a +variant is appended to the os segment of both the
+			# directory and the filename (bin/linuxopt/x86_64/julia-latest-linuxopt-x86_64.tar.gz).
 			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS$VARIANT/$ARCH_FILE/julia-latest-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		[0-9]*.[0-9]*-nightly)
 			[ -n "$ARCH_OS" ] || die "no nightly builds for $ARCH_TRIPLET"
 			_nightly_minor=${_spec%-nightly}
 			R_KIND=nightly
-			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$NIGHTLY_BASE/bin/$ARCH_OS$VARIANT/$ARCH_FILE/$_nightly_minor/julia-latest-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="$_spec"
 			R_ROLLUP=0 ;;
 		pr[0-9A-Fa-f][0-9A-Fa-f]*)
 			# PR builds live in the ephemeral PR bucket, keyed by commit:
-			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os>-<arch>.tar.gz
+			#   $PR_BASE/bin/<head sha>/julia-<first 10 sha chars>-<os><variant>-<arch>.tar.gz
 			# The spec carries the PR build's full 40-char commit sha to avoid
 			# depending on git or the github API. Uppercase hex is accepted and
 			# lowercased to match the bucket key.
@@ -966,7 +968,7 @@ cmd_install() {
 			[ -n "$ARCH_OS" ] || die "no PR builds for $ARCH_TRIPLET"
 			R_KIND='pr'
 			_pr_sha_10_char="$(printf '%.10s' "$_pr_sha")"
-			R_URL="$PR_BASE/bin/$_pr_sha/julia-$_pr_sha_10_char-$ARCH_OS-$ARCH_FILE.tar.gz"
+			R_URL="$PR_BASE/bin/$_pr_sha/julia-$_pr_sha_10_char-$ARCH_OS$VARIANT-$ARCH_FILE.tar.gz"
 			R_LABEL="pr$_pr_sha_10_char"
 			R_ROLLUP=0 ;;
 		pre)
@@ -1008,11 +1010,6 @@ cmd_install() {
 		*)
 			die "unrecognized version specifier: $_spec" ;;
 	esac
-	# Variants are only resolved from the release feed so far. Nightly and PR urls are
-	# built above without fetching anything, so nothing was downloaded before this.
-	if [ -n "$VARIANT" ] && [ "$R_KIND" != release ]; then
-		die "build variants are only supported for releases, not $R_KIND builds ('$1')"
-	fi
 	# Apply the +variant and ~arch tags, in that order (julia-1.14.0-alpha2+opt~x86), and
 	# keep the build out of the X.Y / X rollups: those links track the standard builds
 	# you install for this machine, so a variant or arch-pinned one must never hijack

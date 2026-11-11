@@ -1675,13 +1675,57 @@ end
         @test r.code == 1
         @test endswith(r.err, err)
     end
-    # variants of nightly and PR builds aren't supported (yet): refused before any download
-    for spec in ("nightly+opt", "1.14-nightly+opt", "pr" * "a"^40 * "+opt")
-        r = run_script_y("add", spec)
-        @test r.code == 1
-        kind = startswith(spec, "pr") ? "pr" : "nightly"
-        @test r.err == "error: build variants are only supported for releases, not $kind builds ('$spec')\n"
+    # variants of nightly and PR builds: the variant is appended to the os segment of
+    # the nightly bucket dir and the filename (linux -> linuxopt); PR builds have no os
+    # dir, so only the filename changes
+    nmr = joinpath(mktempdir(), "mirror")
+    prsha = "4d42a1b8c138fd80ce23624c43185bcf7051c6f2"
+    prshort = prsha[1:10]
+    prmr = joinpath(mktempdir(), "prmirror")
+    for (root, name, ver) in (
+        (nmr, "bin/linuxopt/x86_64/julia-latest-linuxopt-x86_64.tar.gz", "1.99.0-DEV+opt"),
+        (nmr, "bin/linuxassert/x86_64/1.14/julia-latest-linuxassert-x86_64.tar.gz", "1.14.0-DEV+assert"),
+        (prmr, "bin/$prsha/julia-$prshort-linuxassert-x86_64.tar.gz", "1.98.0-DEV+assert"),
+    )
+        mkpath(dirname(joinpath(root, name)))
+        write(joinpath(root, name), fake_tarball(ver))
     end
+    nprenv = ("INSTALL_JULIA_NIGHTLY_URL" => "file://$nmr",
+              "INSTALL_JULIA_PR_URL" => "file://$prmr",
+              "INSTALL_JULIA_NO_VERIFY" => "1")
+    for (spec, label, url, ver) in (
+        ("nightly+opt", "nightly+opt",
+         "/bin/linuxopt/x86_64/julia-latest-linuxopt-x86_64.tar.gz", "1.99.0-DEV+opt"),
+        ("1.14-nightly+assert", "1.14-nightly+assert",
+         "/bin/linuxassert/x86_64/1.14/julia-latest-linuxassert-x86_64.tar.gz", "1.14.0-DEV+assert"),
+        ("pr$prsha+assert", "pr$prshort+assert",
+         "/bin/$prsha/julia-$prshort-linuxassert-x86_64.tar.gz", "1.98.0-DEV+assert"),
+    )
+        kind = startswith(spec, "pr") ? "pr" : "nightly"
+        r = run_script_y("add", spec; env=nprenv)
+        @test r.code == 0
+        @test occursin("Resolved '$spec' -> $label ($kind)", r.err)
+        @test occursin(url, r.err)
+        @test runlink("julia-$label") == "fake julia $ver\n"
+    end
+    # a variant the bucket doesn't publish fails at the download, installing nothing
+    r = run_script_y("add", "nightly+nogpl"; env=nprenv)
+    @test r.code == 1
+    @test occursin("download failed", r.err)
+    @test !ispath(joinpath(installdir, "julia-nightly+nogpl"))
+    # (a failed download leaves its staging behind for the next attempt to reap)
+    rm(joinpath(installdir, ".incoming.julia-nightly+nogpl"); recursive=true)
+    # removing a variant by its exact id leaves the other builds alone; a bare `pr`
+    # sweeps PR variants too
+    r = run_script_y("remove", "nightly+opt")
+    @test r.code == 0
+    @test !ispath(joinpath(installdir, "julia-nightly+opt"))
+    @test isdir(joinpath(installdir, "julia-1.14-nightly+assert"))
+    r = run_script_y("remove", "pr")
+    @test r.code == 0
+    @test !ispath(joinpath(installdir, "julia-pr$prshort+assert"))
+    r = run_script_y("remove", "1.14-nightly+assert")
+    @test r.code == 0
     # the +variant must come before the ~arch
     r = run_script_y("add", "1.0.0~amd64+opt"; env)
     @test r.code == 1

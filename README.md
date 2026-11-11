@@ -85,16 +85,15 @@ jinstall [options] [command] [version]
 A specifier may end with a `+variant` and/or a `~arch` suffix, in that order
 (e.g. `1.14.0-alpha2+opt~aarch64`):
 
-| Suffix     | Meaning                                                                   |
-| ---------- | ------------------------------------------------------------------------- |
-| `+opt`     | The optimized (PGO+LTO+BOLT) build, for releases that publish one.        |
-| `+assert`  | The build with assertions enabled, for releases that publish one.         |
-| `~x86_64`  | Force 64-bit x86.                                                         |
-| `~x86`     | Force 32-bit x86 (i686).                                                  |
-| `~aarch64` | Force ARM64.                                                              |
+| Suffix     | Meaning                                                           |
+| ---------- | ----------------------------------------------------------------- |
+| `+opt`     | The optimized (PGO+LTO+BOLT) build, where one is published.       |
+| `+assert`  | The build with assertions enabled, where one is published.        |
+| `~x86_64`  | Force 64-bit x86.                                                 |
+| `~x86`     | Force 32-bit x86 (i686).                                          |
+| `~aarch64` | Force ARM64.                                                      |
 
 `~arch` overrides just the CPU, keeping the autodetected (or configured) platform.
-Variants are not yet supported for nightly or PR builds.
 
 ### Platform override
 
