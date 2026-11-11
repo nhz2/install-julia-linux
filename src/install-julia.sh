@@ -1309,7 +1309,7 @@ Options:
 Versions:
   1  1.12  1.12.6  1.13.0-rc1  pre  nightly  1.11-nightly  pr<commit-sha>
   (append +opt or +assert for a build variant, e.g. 1.14.0-alpha2+opt)
-  (append ~x86_64, ~x86, or ~aarch64 to override the architecture,
+  (append ~x86_64, ~x86, ~aarch64, or ~riscv64 to override the architecture,
   after any +variant: 1.14.0-alpha2+opt~aarch64)
   (switch resolves a numeric prefix to the greatest installed stable
   patch; prereleases, nightlies, PR builds, variants, and ~arch builds

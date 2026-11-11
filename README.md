@@ -92,6 +92,7 @@ A specifier may end with a `+variant` and/or a `~arch` suffix, in that order
 | `~x86_64`  | Force 64-bit x86.                                                 |
 | `~x86`     | Force 32-bit x86 (i686).                                          |
 | `~aarch64` | Force ARM64.                                                      |
+| `~riscv64` | Force 64-bit RISC-V.                                              |
 
 `~arch` overrides just the CPU, keeping the autodetected (or configured) platform.
 
@@ -112,6 +113,7 @@ Available triplets:
 - `aarch64-linux-gnu`
 - `armv7l-linux-gnueabihf`
 - `powerpc64le-linux-gnu`
+- `riscv64-linux-gnu`
 - `x86_64-apple-darwin14`
 - `aarch64-apple-darwin14`
 - `x86_64-unknown-freebsd11.1`
