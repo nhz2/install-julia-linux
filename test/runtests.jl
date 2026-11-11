@@ -57,12 +57,13 @@ end
 
 # A fabricated julia tarball: the right layout (julia-<version>/bin/julia,
 # executable) but a shell stub as the binary. Unsigned, so installing one
-# requires INSTALL_JULIA_NO_VERIFY=1.
-function fake_tarball(version)
+# requires INSTALL_JULIA_NO_VERIFY=1. `msg` is what the stub prints after "fake julia",
+# so a build variant (whose tarball dir is still julia-<version>) can be told apart.
+function fake_tarball(version, msg=version)
     src = mktempdir()
     bin = joinpath(src, "julia-$version/bin")
     mkpath(bin)
-    write(joinpath(bin, "julia"), "#!/bin/sh\necho fake julia $version\n")
+    write(joinpath(bin, "julia"), "#!/bin/sh\necho fake julia $msg\n")
     chmod(joinpath(bin, "julia"), 0o755)
     encode(GzipEncodeOptions(), read(Tar.create(src)))
 end
@@ -81,9 +82,14 @@ conventional_layout(v, bucket, filearch) =
 #   tarball_version - v->content_version: lets the served tarball carry a DIFFERENT
 #                     internal version than the release feed key (version-binding tests).
 #   triplet         - override the release feed `triplet` (defaults to <filearch>-linux-gnu).
+#   variants        - version => the build variants to also publish for it, in the
+#                     version's "variants" list at Julia's real variant layout
+#                     (bin/linux<name>/<filearch>/...); their stub prints "<v>+<name>".
+#                     Each is a name, or a vector of names for a build combining them
+#                     (bin/linux<name1><name2>/..., stub "<v>+<name1>+<name2>").
 function fake_mirror(versions...; arch=("x64", "x86_64"),
                      layout=conventional_layout, tarball_version=identity,
-                     triplet=nothing)
+                     triplet=nothing, variants=Dict())
     bucket, filearch = arch
     trip = triplet === nothing ? "$filearch-linux-gnu" : triplet
     mr = joinpath(mktempdir(), "mirror")
@@ -99,6 +105,16 @@ function fake_mirror(versions...; arch=("x64", "x86_64"),
             "triplet" => trip, "kind" => "archive", "extension" => "tar.gz",
         )
         feed[v] = Dict("files" => [file], "stable" => !occursin('-', v))
+        for n in get(variants, v, ())
+            names = n isa AbstractString ? [n] : collect(n)
+            tag = join(names)
+            vname = "bin/linux$tag/$filearch/$(join(split(v, '.')[1:2], '.'))/julia-$v-linux$tag-$filearch.tar.gz"
+            mkpath(dirname(joinpath(mr, vname)))
+            write(joinpath(mr, vname), fake_tarball(tarball_version(v), join([v; names], '+')))
+            vfile = merge(file, Dict("url" => "https://julialang-s3.julialang.org/$vname",
+                                     "variants" => names))
+            push!(get!(feed[v], "variants", []), vfile)
+        end
     end
     mkpath(joinpath(mr, "bin"))
     write(joinpath(mr, "bin/versions.json"), JSON.json(feed))
@@ -110,8 +126,9 @@ end
 # through cmd_install, so source the script with its final `main "$@"` line removed
 # (functions get defined, the program doesn't run), then set the three globals
 # load_table reads and dump VERSION_URL_TABLE. The release feed is served from a
-# throwaway file:// mirror whose bin/versions.json is the given fixture.
-function shell_load_table(versions_json; triplet, filter)
+# throwaway file:// mirror whose bin/versions.json is the given fixture. `variant` sets
+# VARIANT, the build variant to select ("" for the standard builds).
+function shell_load_table(versions_json; triplet, filter, variant="")
     mr = mktempdir()
     mkpath(joinpath(mr, "bin"))
     cp(versions_json, joinpath(mr, "bin", "versions.json"))
@@ -122,6 +139,7 @@ function shell_load_table(versions_json; triplet, filter)
         . $(shq(harness))
         VERSION_SEARCH_FILTER=$(shq(filter))
         ARCH_TRIPLET=$(shq(triplet))
+        VARIANT=$(shq(variant))
         STABLE_BASE=$(shq("file://$mr"))
         load_table
         printf '%s' "\$VERSION_URL_TABLE"
@@ -215,12 +233,14 @@ end
     @test r.err == "error: unrecognized version specifier: foo\n"
     @test !isdir(installdir)   # died before mkdir -p INSTALL_DIR
 
-    # '+' is not a legal spec character (build metadata is unsupported, and it is an
-    # ERE metacharacter reesc does not escape): rejected up front, before any fetch
-    for spec in ("1+0", "1.0.0+build", "1.2+3")
+    # '+' only introduces a build variant: everything after the leftmost '+' must be
+    # a-z0-9 (the release feed schema's names), so neither an empty or malformed name
+    # nor a second '+' (which would otherwise reach the search filter as an ERE
+    # quantifier) gets past, all rejected up front, before any fetch
+    for spec in ("1+", "+", "1.0.0+Opt", "1.0.0+o.pt", "1.0.0+o_pt", "1.0.0+o-pt", "1+opt+x", "1++opt")
         r = run_script_y(spec)
         @test r.code == 1
-        @test r.err == "error: bad version specifier: $spec\n"
+        @test r.err == "error: bad variant in '$spec' (variant must be one or more of a-z0-9)\n"
     end
     @test !isdir(installdir)
 
@@ -970,12 +990,20 @@ end
     @test julialink() == target("nightly")   # the failures left the default alone
 
     # ERE metacharacters are rejected up front, not interpreted by the `grep -E`
-    # prefix match (reesc only escapes '.'). Without this guard `1+` would silently
-    # match 11.x-style builds and `1.*`/`1.10.0[` would mis-resolve or error out.
-    for q in ("1+", "1.*", "1.10.0[", "1.9.9+")
+    # prefix match (reesc only escapes '.'). Without this guard `1.*`/`1.10.0[`
+    # would mis-resolve or error out.
+    for q in ("1.*", "1.10.0[")
         r = run_script_y("switch", q)
         @test r.code == 1
         @test r.err == "error: bad version specifier: $q\n"
+    end
+    # '+' is a legal spec character (it introduces a build variant), but a variant
+    # needs its exact id: one that isn't installed never reaches the prefix match,
+    # where `1+` would silently match 11.x-style builds.
+    for q in ("1+", "1.9.9+", "1.10+opt")
+        r = run_script_y("switch", q)
+        @test r.code == 1
+        @test r.err == "error: no installed version matching '$q' (build variants need their exact id, e.g. 1.14.0-alpha2+opt)\n"
     end
     @test julialink() == target("nightly")   # default still untouched
 end
@@ -1573,6 +1601,123 @@ end
         @test isfile(joinpath(installdir, "julia-1.0.0~$aliasname/bin/julia"))
     end
 end
+
+@testset "build variants" begin
+    cleanup()
+    # 1.0.1 has no variants and 1.0.2, the latest stable, only a build combining opt
+    # and assert, which is neither (combinations aren't selectable yet). So a prefix
+    # +opt or +assert spec must settle on 1.0.0, the greatest version that has one.
+    mr = fake_mirror("1.0.0", "1.0.1", "1.0.2", "1.1.0-rc1";
+                     variants=Dict("1.0.0" => ["opt", "assert"],
+                                   "1.0.2" => [["opt", "assert"]],
+                                   "1.1.0-rc1" => ["opt"]))
+    env = ("INSTALL_JULIA_STABLE_URL" => "file://$mr", "INSTALL_JULIA_NO_VERIFY" => "1")
+    runlink(name) = read(`$(joinpath(symlinkdir, name))`, String)
+    linktarget(name) = readlink(joinpath(symlinkdir, name))
+    bin(id) = joinpath(installdir, "julia-$id", "bin", "julia")
+
+    # exact version + variant: the variant's own build, its own label and direct
+    # link, and no rollups (it must never hijack julia-1 / julia-1.0)
+    r = run_script_y("add", "1.0.0+opt"; env)
+    @test r.code == 0
+    @test occursin("Resolved '1.0.0+opt' -> 1.0.0+opt (release)", r.err)
+    @test occursin("/bin/linuxopt/x86_64/1.0/julia-1.0.0-linuxopt-x86_64.tar.gz", r.err)
+    @test runlink("julia-1.0.0+opt") == "fake julia 1.0.0+opt\n"
+    @test readdir(symlinkdir) == ["julia-1.0.0+opt"]
+
+    # the standard build of the same version is separate and does take the rollups
+    r = run_script_y("add", "1.0.0"; env)
+    @test r.code == 0
+    @test runlink("julia-1.0.0") == "fake julia 1.0.0\n"
+    @test linktarget("julia-1") == bin("1.0.0")
+    @test linktarget("julia-1.0") == bin("1.0.0")
+
+    # prefix specs resolve to the greatest version that HAS the variant
+    r = run_script_y("add", "1+assert"; env)
+    @test r.code == 0
+    @test occursin("Resolved '1+assert' -> 1.0.0+assert (release)", r.err)
+    @test runlink("julia-1.0.0+assert") == "fake julia 1.0.0+assert\n"
+    r = run_script_y("add", "pre+opt"; env)
+    @test r.code == 0
+    @test occursin("Resolved 'pre+opt' -> 1.1.0-rc1+opt (release)", r.err)
+    @test runlink("julia-1.1.0-rc1+opt") == "fake julia 1.1.0-rc1+opt\n"
+
+    # a bare +variant is the latest stable that has it, made the default; already
+    # installed, so it is only re-linked
+    r = run_script_y("+opt"; env)
+    @test r.code == 0
+    @test occursin("Resolved '+opt' -> 1.0.0+opt (release)", r.err)
+    @test !occursin(r"Downloading \S+\.tar\.gz", r.err)
+    @test linktarget("julia") == bin("1.0.0+opt")
+    @test linktarget("julia-1") == bin("1.0.0")   # rollups untouched
+
+    # an exact installed variant takes the fast path: no release feed fetch at all
+    r = run_script_y("add", "1.0.0+opt"; env=("INSTALL_JULIA_STABLE_URL" => "file:///nonexistent",))
+    @test r.code == 0
+    @test !occursin("release feed", r.err)
+
+    # ~arch goes after the variant, and both tag the label in that order
+    r = run_script_y("add", "1.0.0+opt~amd64"; env)
+    @test r.code == 0
+    @test occursin("Resolved '1.0.0+opt~amd64' -> 1.0.0+opt~amd64 (release)", r.err)
+    @test runlink("julia-1.0.0+opt~amd64") == "fake julia 1.0.0+opt\n"
+
+    # a version without that variant, or a variant nobody publishes, is an error
+    before = sort(readdir(installdir))
+    for (spec, err) in (
+            ("1.0.1+opt", "error: no x86_64-linux-gnu archive for 1.0.1+opt in versions.json\n"),
+            # a combined build is not selected by either of its parts
+            ("1.0.2+opt", "error: no x86_64-linux-gnu archive for 1.0.2+opt in versions.json\n"),
+            ("1.0.2+assert", "error: no x86_64-linux-gnu archive for 1.0.2+assert in versions.json\n"),
+            ("1.0+nogpl", "error: no stable release matching '1.0+nogpl' for x86_64-linux-gnu\n"),
+            ("1.1+opt",   "error: no stable release matching '1.1+opt' for x86_64-linux-gnu\n"))
+        r = run_script_y("add", spec; env)
+        @test r.code == 1
+        @test endswith(r.err, err)
+    end
+    # variants of nightly and PR builds aren't supported (yet): refused before any download
+    for spec in ("nightly+opt", "1.14-nightly+opt", "pr" * "a"^40 * "+opt")
+        r = run_script_y("add", spec)
+        @test r.code == 1
+        kind = startswith(spec, "pr") ? "pr" : "nightly"
+        @test r.err == "error: build variants are only supported for releases, not $kind builds ('$spec')\n"
+    end
+    # the +variant must come before the ~arch
+    r = run_script_y("add", "1.0.0~amd64+opt"; env)
+    @test r.code == 1
+    @test r.err == "error: bad arch override in '1.0.0~amd64+opt' (a +variant goes before the ~arch, e.g. 1.14+opt~aarch64)\n"
+    @test sort(readdir(installdir)) == before
+
+    # switch and list take a variant's exact id
+    r = run_script_y("switch", "1.0.0+assert")
+    @test r.code == 0
+    @test linktarget("julia") == bin("1.0.0+assert")
+    r = run_script_y("list")
+    @test r.code == 0
+    @test occursin(" * 1.0.0+assert\n", r.out)
+    @test occursin("   1.0.0+opt\n", r.out)
+
+    # remove by exact id takes just that build; a numeric prefix sweeps the variants
+    # of its line with everything else
+    r = run_script_y("remove", "1.0.0+opt")
+    @test r.code == 0
+    @test sort(readdir(installdir)) ==
+        ["julia-1.0.0", "julia-1.0.0+assert", "julia-1.0.0+opt~amd64", "julia-1.1.0-rc1+opt"]
+    r = run_script_y("remove", "1.0")
+    @test r.code == 0
+    @test readdir(installdir) == ["julia-1.1.0-rc1+opt"]
+    @test readdir(symlinkdir) == ["julia-1.1.0-rc1+opt"]
+
+    # a full X.Y.Z sweeps its variants too ('+' is a component boundary), even when
+    # the standard build of that version isn't installed
+    for spec in ("1.0.0+opt", "1.0.0+assert", "1.0.0+opt~amd64")
+        @test run_script_y("add", spec; env).code == 0
+    end
+    r = run_script_y("remove", "1.0.0")
+    @test r.code == 0
+    @test readdir(installdir) == ["julia-1.1.0-rc1+opt"]
+    @test readdir(symlinkdir) == ["julia-1.1.0-rc1+opt"]
+end
 @testset "triplet override" begin
     # INSTALL_JULIA_TRIPLET sets the target triplet directly, so any host can resolve
     # macOS/FreeBSD (or any) builds. Stable resolution matches the release feed `triplet`
@@ -1983,4 +2128,62 @@ end
     # never aborts the caller under set -e).
     nomatch = feed_of(file(version="1.0.0", url="$OFFICIAL/bin/ok.tar.gz"))
     @test isempty(shell_load_table(nomatch; triplet="x86_64-linux-gnu", filter="^9\\.9\\.9\$"))
+end
+
+@testset "load_table skips build variants" begin
+    # A version's "variants" array lists VariantFiles: Files for the same triplet,
+    # kind and extension, plus their own "variants" list of names. They must never
+    # be picked up as the standard build. load_table splits records on '}', so the
+    # version-level "variants" key shares a record with whichever File follows it;
+    # written as raw JSON to pin the key order, these cover each placement of it.
+    OFFICIAL = "https://julialang-s3.julialang.org"
+    fileobj(v, path; variants=nothing) = """
+        {
+          "triplet": "x86_64-linux-gnu", "kind": "archive", "extension": "tar.gz",
+          "os": "linux", "arch": "x86_64", "version": "$v",
+          $(variants === nothing ? "" : "\"variants\": [ $(join(("\"$n\"" for n in variants), ", ")) ],")
+          "url": "$OFFICIAL/bin/$path.tar.gz"
+        }"""
+    std(v) = fileobj(v, "std-$v")
+    var(v, n) = fileobj(v, "$n-$v"; variants=[n])
+    function feed(entries...)
+        p = joinpath(mktempdir(), "versions.json")
+        write(p, "{\n" * join(entries, ",\n") * "\n}\n")
+        p
+    end
+    fixture = feed(
+        # the published shape: "files" then "variants"
+        """ "1.0.0": { "files": [ $(std("1.0.0")) ], "stable": true,
+            "variants": [ $(var("1.0.0", "opt")), $(var("1.0.0", "assert")) ] }""",
+        # "variants" first: its key shares a record with the first VariantFile
+        """ "1.0.1": { "variants": [ $(var("1.0.1", "opt")) ],
+            "files": [ $(std("1.0.1")) ], "stable": true }""",
+        # an empty "variants" first: its key shares a record with the first File,
+        # which must still be kept
+        """ "1.0.2": { "variants": [], "files": [ $(std("1.0.2")) ], "stable": true }""",
+        # no "variants" at all
+        """ "1.0.3": { "files": [ $(std("1.0.3")) ], "stable": true }""",
+        # a combination of variants is none of its parts
+        """ "1.0.4": { "files": [ $(std("1.0.4")) ], "stable": true,
+            "variants": [ $(fileobj("1.0.4", "optassert-1.0.4"; variants=["opt", "assert"])) ] }""",
+    )
+    @test JSON.parsefile(fixture) isa AbstractDict  # the fixture is valid JSON
+    @test shell_load_table(fixture; triplet="x86_64-linux-gnu", filter=".") == Set([
+        "1.0.0 /bin/std-1.0.0.tar.gz",
+        "1.0.1 /bin/std-1.0.1.tar.gz",
+        "1.0.2 /bin/std-1.0.2.tar.gz",
+        "1.0.3 /bin/std-1.0.3.tar.gz",
+        "1.0.4 /bin/std-1.0.4.tar.gz",
+    ])
+    # VARIANT selects exactly the builds whose list is ["<variant>"], wherever the
+    # version-level key falls, and nothing else
+    @test shell_load_table(fixture; triplet="x86_64-linux-gnu", filter=".", variant="opt") == Set([
+        "1.0.0 /bin/opt-1.0.0.tar.gz",
+        "1.0.1 /bin/opt-1.0.1.tar.gz",
+    ])
+    @test shell_load_table(fixture; triplet="x86_64-linux-gnu", filter=".", variant="assert") ==
+        Set(["1.0.0 /bin/assert-1.0.0.tar.gz"])
+    # a name is matched whole, not as a prefix
+    @test isempty(shell_load_table(fixture; triplet="x86_64-linux-gnu", filter=".", variant="op"))
+    @test isempty(shell_load_table(fixture; triplet="x86_64-linux-gnu", filter=".", variant="nogpl"))
 end

@@ -17,6 +17,12 @@
                 },
                 "stable": {
                     "type": "boolean"
+                },
+                "variants": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/VariantFile"
+                    }
                 }
             },
             "required": [
@@ -49,6 +55,12 @@
                 },
                 "size": {
                     "type": "integer"
+                },
+                "etag": {
+                    "type": "string"
+                },
+                "last-modified": {
+                    "type": "string"
                 },
                 "version": {
                     "type": "string"
@@ -89,6 +101,86 @@
             ],
             "title": "File"
         },
+        "VariantFile": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "triplet": {
+                    "$ref": "#/definitions/Triplet"
+                },
+                "kind": {
+                    "$ref": "#/definitions/Kind"
+                },
+                "arch": {
+                    "$ref": "#/definitions/Arch"
+                },
+                "sha256": {
+                    "type": "string"
+                },
+                "git-tree-sha1": {
+                    "type": "string"
+                },
+                "git-tree-sha256": {
+                    "type": "string"
+                },
+                "size": {
+                    "type": "integer"
+                },
+                "etag": {
+                    "type": "string"
+                },
+                "last-modified": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                },
+                "os": {
+                    "$ref": "#/definitions/OS"
+                },
+                "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "qt-uri-protocols": [
+                        "https"
+                    ],
+                    "qt-uri-extensions": [
+                        ".dmg",
+                        ".exe",
+                        ".gz",
+                        ".zip"
+                    ]
+                },
+                "asc": {
+                    "type": "string"
+                },
+                "extension": {
+                    "$ref": "#/definitions/FileExtension"
+                },
+                "variants": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9]+$"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                }
+            },
+            "required": [
+                "arch",
+                "extension",
+                "kind",
+                "os",
+                "sha256",
+                "size",
+                "triplet",
+                "url",
+                "variants",
+                "version"
+            ],
+            "title": "VariantFile"
+        },
         "Arch": {
             "type": "string",
             "enum": [
@@ -96,7 +188,8 @@
                 "i686",
                 "powerpc64le",
                 "aarch64",
-                "armv7l"
+                "armv7l",
+                "riscv64"
             ],
             "title": "Arch"
         },
@@ -131,7 +224,8 @@
                 "armv7l-linux-gnueabihf",
                 "x86_64-unknown-freebsd11.1",
                 "x86_64-linux-musl",
-                "aarch64-apple-darwin14"
+                "aarch64-apple-darwin14",
+                "riscv64-linux-gnu"
             ],
             "title": "Triplet"
         },
