@@ -12,7 +12,7 @@ Runtime dependencies: `curl`, `gpgv` (or `gpgv2`/`sqv`), `tar`, `mktemp`, and `b
 ## Install the script for ongoing version management
 
 ```sh
-curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.4.0/install-julia.sh
+curl -fsSLO https://github.com/nhz2/install-julia-linux/releases/download/v0.5.0/install-julia.sh
 chmod +x install-julia.sh
 mv install-julia.sh ~/.local/bin/jinstall
 ```

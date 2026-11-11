@@ -6,10 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## Unreleased
 
+## [v0.5.0](https://github.com/nhz2/install-julia-linux/tree/v0.5.0) - 2026-11-11
+
 ### Added
 
 - Build variants can be installed with a `+variant` suffix, e.g. `jinstall add 1.14.0-alpha2+opt`.
-- The `riscv64-linux-gnu` triplet is now supported (autodetected on riscv64 Linux, or forced with `~riscv64`).
+- The `riscv64-linux-gnu` triplet is now supported.
 
 ## [v0.4.0](https://github.com/nhz2/install-julia-linux/tree/v0.4.0) - 2026-07-04
 
